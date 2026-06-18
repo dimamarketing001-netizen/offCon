@@ -1,41 +1,37 @@
 """
-Точка входа
-Запускается каждые 5 минут через cron
+Точка входа — запуск каждые 5 минут
 """
 
 import time
 import schedule
 from datetime import datetime
-from b24_client import get_leads_last_21_days
+from b24_client import get_unprocessed_leads
 from lead_processor import process_lead
-from config import B24_WEBHOOK
 
 
-def run_processing():
-    """Основной цикл обработки"""
+def run():
+    print(f"\n{'#'*55}")
+    print(f"🚀 Запуск: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'#'*55}")
 
-    print(f"\n{'#' * 60}")
-    print(f"🚀 Запуск обработки: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'#' * 60}")
-
-    # Получаем лиды
-    leads = get_leads_last_21_days()
+    leads = get_unprocessed_leads()
 
     if not leads:
         print("📭 Нет лидов для обработки")
         return
 
-    # Статистика
+    print(f"📋 Лидов для обработки: {len(leads)}")
+
     stats = {
-        'sent': 0,
-        'not_qualified': 0,
-        'no_calls': 0,
-        'no_audio': 0,
-        'no_identifiers': 0,
-        'error': 0
+        'sent':            0,
+        'qualified_no_id': 0,
+        'not_qualified':   0,
+        'no_calls':        0,
+        'no_transcript':   0,
+        'metrika_error':   0,
+        'error':           0
     }
 
-    # Обрабатываем каждый лид
     for i, lead in enumerate(leads, 1):
         print(f"\n[{i}/{len(leads)}]")
 
@@ -46,56 +42,25 @@ def run_processing():
             print(f"❌ Критическая ошибка лида {lead.get('ID')}: {e}")
             stats['error'] += 1
 
-        # Пауза между лидами чтобы не перегружать API
         time.sleep(1)
 
-    # Итоги
-    print(f"\n{'=' * 50}")
+    print(f"\n{'='*55}")
     print(f"📊 ИТОГИ:")
-    print(f"  ✅ Отправлено в Метрику: {stats['sent']}")
-    print(f"  ❌ Не квалифицированы:  {stats['not_qualified']}")
-    print(f"  📵 Нет звонков:         {stats['no_calls']}")
-    print(f"  🔇 Нет аудио:           {stats['no_audio']}")
-    print(f"  🔑 Нет идентификаторов: {stats['no_identifiers']}")
-    print(f"  💥 Ошибки:              {stats['error']}")
-    print(f"{'=' * 50}")
-
-
-def setup_ai_engine():
-    """
-    Регистрируем AI Engine в Б24 (один раз!)
-    Раскомментируйте и запустите один раз
-    """
-    from ai_engine_endpoint import register_ai_engine
-
-    YOUR_SERVER_URL = "https://ваш-сервер.ru"
-
-    register_ai_engine(
-        b24_webhook=B24_WEBHOOK,
-        completions_url=f"{YOUR_SERVER_URL}/health"  # Для проверки
-    )
+    for k, v in stats.items():
+        emoji = '✅' if k == 'sent' else '📊'
+        print(f"  {emoji} {k}: {v}")
+    print(f"{'='*55}")
 
 
 if __name__ == '__main__':
     import sys
 
-    if '--register-engine' in sys.argv:
-        # python main.py --register-engine
-        setup_ai_engine()
-
-    elif '--once' in sys.argv:
-        # python main.py --once (разовый запуск)
-        run_processing()
-
+    if '--once' in sys.argv:
+        run()
     else:
-        # Запуск по расписанию каждые 5 минут
         print("⏰ Планировщик запущен (каждые 5 минут)")
-
-        schedule.every(5).minutes.do(run_processing)
-
-        # Сразу запускаем при старте
-        run_processing()
-
+        schedule.every(5).minutes.do(run)
+        run()
         while True:
             schedule.run_pending()
             time.sleep(30)
