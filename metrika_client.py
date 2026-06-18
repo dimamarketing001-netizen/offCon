@@ -2,7 +2,7 @@ import json
 import time
 import requests
 from config import METRIKA_TOKEN, METRIKA_COUNTER_ID, METRIKA_GOAL
-
+from typing import Optional, List, Dict
 
 def send_conversion(client_id: str = None, phone: str = None) -> bool:
     """Отправляем офлайн конверсию в Яндекс.Метрику"""

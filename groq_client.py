@@ -2,6 +2,7 @@ import re
 import json
 from groq import Groq
 from config import GROQ_API_KEY, GROQ_TEXT_MODEL, MIN_DEBT_AMOUNT
+from typing import Optional, List, Dict
 
 client = Groq(api_key=GROQ_API_KEY)
 

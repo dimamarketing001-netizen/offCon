@@ -7,7 +7,7 @@ import schedule
 from datetime import datetime
 from b24_client import get_unprocessed_leads
 from lead_processor import process_lead
-
+from typing import Optional, List, Dict
 
 def run():
     print(f"\n{'#'*55}")
