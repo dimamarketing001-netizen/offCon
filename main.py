@@ -23,13 +23,13 @@ def run():
     print(f"📋 Лидов для обработки: {len(leads)}")
 
     stats = {
-        'sent':            0,
-        'qualified_no_id': 0,
-        'not_qualified':   0,
-        'no_calls':        0,
-        'no_transcript':   0,
-        'metrika_error':   0,
-        'error':           0
+        'sent': 0,
+        'no_utm': 0,  # нет UTM_CAMPAIGN
+        'no_ymuid': 0,  # нет _ym_uid
+        'not_qualified': 0,
+        'no_calls': 0,
+        'metrika_error': 0,
+        'error': 0
     }
 
     for i, lead in enumerate(leads, 1):

@@ -1,16 +1,22 @@
+from typing import Optional
 import json
 import time
 import requests
-from config import METRIKA_TOKEN, METRIKA_COUNTER_ID, METRIKA_GOAL
-from typing import Optional, List, Dict
+from config import METRIKA_GOAL
 
-def send_conversion(client_id: str = None, phone: str = None) -> bool:
+
+def send_conversion(
+    counter_id: str,
+    token: str,
+    client_id: str = None,
+    phone: str = None
+) -> bool:
     """Отправляем офлайн конверсию в Яндекс.Метрику"""
 
     payload = {
         "DateTime": int(time.time()),
-        "Target": METRIKA_GOAL,
-        "Price": 1,
+        "Target":   METRIKA_GOAL,
+        "Price":    1,
         "Currency": "RUB"
     }
 
@@ -27,24 +33,25 @@ def send_conversion(client_id: str = None, phone: str = None) -> bool:
         print("   ❌ Нет идентификаторов для Метрики")
         return False
 
-    url = f"https://api-metrika.yandex.net/management/v1/counter/{METRIKA_COUNTER_ID}/offline_conversions/upload"
+    url = (f"https://api-metrika.yandex.net/management/v1/"
+           f"counter/{counter_id}/offline_conversions/upload")
 
     try:
         r = requests.post(
             url,
             headers={
-                "Authorization": f"OAuth {METRIKA_TOKEN}",
-                "Content-Type": "application/x-www-form-urlencoded"
+                "Authorization": f"OAuth {token}",
+                "Content-Type":  "application/x-www-form-urlencoded"
             },
             data={"data": json.dumps([payload])},
             timeout=30
         )
 
         if r.status_code == 200:
-            print(f"   ✅ Метрика: конверсия принята!")
+            print(f"   ✅ Метрика: принята! counter={counter_id}")
             return True
         else:
-            print(f"   ❌ Метрика ошибка {r.status_code}: {r.text}")
+            print(f"   ❌ Метрика {r.status_code}: {r.text[:200]}")
             return False
 
     except Exception as e:

@@ -1,16 +1,12 @@
-"""
-Основная логика обработки лида
-"""
-
 from typing import Optional, List, Dict
 import re
 from b24_client import get_calls_for_lead, update_lead
 from audio_processor import process_call_audio
-from groq_client import analyze_transcript
+from analyzer import analyze_text          # новый простой анализатор
 from metrika_client import send_conversion
 from config import (
     QUALIFIED_STATUSES,
-    MIN_CALL_DURATION,
+    COMPANY_METRIKA_MAP,
     FIELD_METRIKA_SENT,
     FIELD_GPT_CITY,
     FIELD_GPT_DEBT,
@@ -20,23 +16,42 @@ from config import (
 
 
 def parse_ym_uid(comments: str) -> Optional[str]:
-    """Извлекаем _ym_uid из COMMENTS"""
     match = re.search(r'_ym_uid=(\d+)', comments or '')
     return match.group(1) if match else None
 
 
 def get_phone(lead: dict) -> Optional[str]:
-    """Извлекаем телефон из лида"""
     phones = lead.get('PHONE', [])
     if phones and isinstance(phones, list):
         return phones[0].get('VALUE')
     return None
 
 
+def get_metrika_config(lead: dict) -> Optional[dict]:
+    """
+    Берём UTM_CAMPAIGN из лида → ищем в маппинге
+    Возвращает {counter_id, token} или None
+    """
+    utm_campaign = lead.get('UTM_CAMPAIGN', '') or ''
+    utm_campaign = utm_campaign.strip()
+
+    if not utm_campaign:
+        print(f"   ⏭️ Нет UTM_CAMPAIGN — пропускаем")
+        return None
+
+    config = COMPANY_METRIKA_MAP.get(utm_campaign)
+
+    if not config:
+        print(f"   ⏭️ UTM_CAMPAIGN={utm_campaign} не найден в маппинге")
+        return None
+
+    print(f"   ✅ UTM_CAMPAIGN={utm_campaign} → counter={config['counter_id']}")
+    return config
+
+
 def mark_lead(lead_id: str, qualified: bool, city: str = None,
               debt: float = None, result_text: str = None,
               metrika_sent: bool = False):
-    """Обновляем поля лида в Б24"""
     fields = {
         FIELD_GPT_QUALIFIED: "Y" if qualified else "N",
         FIELD_METRIKA_SENT:  "Y" if metrika_sent else "N",
@@ -48,119 +63,100 @@ def mark_lead(lead_id: str, qualified: bool, city: str = None,
 
 
 def process_lead(lead: dict) -> str:
-    """
-    Обрабатываем один лид.
-    Возвращает статус: sent | qualified_no_id | not_qualified |
-                       no_calls | no_transcript | error
-    """
-    lead_id    = lead.get('ID')
-    status_id  = lead.get('STATUS_ID')
-    comments   = lead.get('COMMENTS', '')
+    lead_id   = lead.get('ID')
+    status_id = lead.get('STATUS_ID')
+    comments  = lead.get('COMMENTS', '')
 
     print(f"\n{'='*55}")
     print(f"📋 Лид ID={lead_id} | Статус={status_id}")
+    print(f"   UTM_CAMPAIGN: {lead.get('UTM_CAMPAIGN', '❌ нет')}")
 
-    # Извлекаем идентификаторы
+    # ===== 1. Проверяем UTM_CAMPAIGN → маппинг =====
+    metrika_cfg = get_metrika_config(lead)
+    if not metrika_cfg:
+        mark_lead(lead_id, qualified=False,
+                  result_text="Пропущен: нет UTM_CAMPAIGN в маппинге",
+                  metrika_sent=False)
+        return 'no_utm'
+
+    # ===== 2. Проверяем _ym_uid =====
     ym_uid = parse_ym_uid(comments)
     phone  = get_phone(lead)
 
     print(f"   _ym_uid: {ym_uid or '❌'} | Телефон: {phone or '❌'}")
 
-    # ===================================================
-    # ПУТЬ 1: Статус уже квалифицированный
-    # ===================================================
+    if not ym_uid:
+        print(f"   ⏭️ Нет _ym_uid — пропускаем")
+        mark_lead(lead_id, qualified=False,
+                  result_text="Пропущен: нет _ym_uid",
+                  metrika_sent=False)
+        return 'no_ymuid'
+
+    # ===== 3. Статус уже квалифицированный =====
     if status_id in QUALIFIED_STATUSES:
         print(f"   ✅ Статус квалифицирован: {status_id}")
 
-        if not any([ym_uid, phone]):
-            print("   ⚠️ Нет идентификаторов → не отправляем в Метрику")
-            mark_lead(lead_id, qualified=True,
-                      result_text=f"Квалифицирован по статусу: {status_id}",
-                      metrika_sent=False)
-            return 'qualified_no_id'
-
-        sent = send_conversion(client_id=ym_uid, phone=phone)
+        sent = send_conversion(
+            counter_id=metrika_cfg['counter_id'],
+            token=metrika_cfg['token'],
+            client_id=ym_uid,
+            phone=phone
+        )
         mark_lead(lead_id, qualified=True,
                   result_text=f"Квалифицирован по статусу: {status_id}",
                   metrika_sent=sent)
 
         return 'sent' if sent else 'metrika_error'
 
-    # ===================================================
-    # ПУТЬ 2: Анализируем звонки
-    # ===================================================
-    print(f"   🔍 Статус не квалифицирован → проверяем звонки")
-
+    # ===== 4. Анализируем звонки =====
+    print(f"   🔍 Проверяем звонки...")
     calls = get_calls_for_lead(lead_id)
 
-    # Фильтруем: только звонки > MIN_CALL_DURATION с записью
-    good_calls = [
-        c for c in calls
-        if int(c.get('CALL_DURATION', 0) or 0) >= MIN_CALL_DURATION
-        and c.get('CALL_RECORD_URL')
-    ]
-
-    print(f"   Всего звонков: {len(calls)} | "
-          f"Подходящих (>{MIN_CALL_DURATION}с): {len(good_calls)}")
-
-    if not good_calls:
+    if not calls:
         print("   ❌ Нет подходящих звонков")
         return 'no_calls'
 
-    # Обрабатываем каждый звонок пока не найдём квалифицированный
-    for call in good_calls:
-        call_id      = call.get('ID')
-        record_url   = call.get('CALL_RECORD_URL')
-        duration     = call.get('CALL_DURATION')
+    for call in calls:
+        call_id    = call.get('ID')
+        record_url = call.get('CALL_RECORD_URL')
+        duration   = call.get('CALL_DURATION')
 
         print(f"\n   📞 Звонок ID={call_id}, {duration}с")
 
-        # Транскрибация
         transcript = process_call_audio(record_url, call_id)
-
         if not transcript:
-            print(f"   ⚠️ Нет транскрипта, пропускаем")
             continue
 
-        client_text  = transcript.get('client', '')
-        manager_text = transcript.get('manager', '')
+        full_text = transcript.get('full_text', '')
+        print(f"   📄 Текст ({len(full_text)} симв): {full_text[:200]}")
 
-        print(f"   📝 Клиент: {client_text[:100]}")
-        print(f"   📝 Менеджер: {manager_text[:100]}")
-
-        # GPT анализ
-        analysis = analyze_transcript(client_text, manager_text)
+        # Анализируем
+        analysis = analyze_text(full_text)
 
         if analysis.get('qualified'):
-            city   = analysis.get('city')
-            debt   = analysis.get('debt_amount')
-            result = (f"Звонок {call_id} | "
-                      f"Город: {city} | "
-                      f"Долг: {debt} | "
-                      f"Клиент: {client_text[:200]}")
+            city = analysis.get('city')
+            debt = analysis.get('debt_amount')
 
             print(f"   ✅ КВАЛИФИЦИРОВАН! Город={city}, Долг={debt}")
 
-            if not any([ym_uid, phone]):
-                print("   ⚠️ Нет идентификаторов для Метрики")
-                mark_lead(lead_id, qualified=True,
-                          city=city, debt=debt,
-                          result_text=result,
-                          metrika_sent=False)
-                return 'qualified_no_id'
+            sent = send_conversion(
+                counter_id=metrika_cfg['counter_id'],
+                token=metrika_cfg['token'],
+                client_id=ym_uid,
+                phone=phone
+            )
 
-            sent = send_conversion(client_id=ym_uid, phone=phone)
-            mark_lead(lead_id, qualified=True,
-                      city=city, debt=debt,
-                      result_text=result,
-                      metrika_sent=sent)
+            mark_lead(
+                lead_id, qualified=True,
+                city=city, debt=debt,
+                result_text=f"Звонок {call_id} | {city} | {debt} | {full_text[:200]}",
+                metrika_sent=sent
+            )
 
             return 'sent' if sent else 'metrika_error'
 
-    # Ни один звонок не дал квалификацию
-    print(f"   ❌ Лид не квалифицирован после анализа {len(good_calls)} звонков")
+    print(f"   ❌ Не квалифицирован")
     mark_lead(lead_id, qualified=False,
-              result_text="Не квалифицирован после анализа звонков",
+              result_text="Не квалифицирован",
               metrika_sent=False)
-
     return 'not_qualified'
