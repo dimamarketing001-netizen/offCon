@@ -18,13 +18,13 @@ from config import (
 )
 
 
-def parse_ym_uid(comments: str) -> str | None:
+def parse_ym_uid(comments: str) -> Optional[str]:
     """Извлекаем _ym_uid из COMMENTS"""
     match = re.search(r'_ym_uid=(\d+)', comments or '')
     return match.group(1) if match else None
 
 
-def get_phone(lead: dict) -> str | None:
+def get_phone(lead: dict) -> Optional[str]:
     """Извлекаем телефон из лида"""
     phones = lead.get('PHONE', [])
     if phones and isinstance(phones, list):

@@ -79,7 +79,7 @@ def get_unprocessed_leads() -> list:
     return leads
 
 
-def get_calls_for_lead(lead_id: str) -> list:
+def get_calls_for_lead(lead_id: str) -> List[dict]:
     """
     Получаем звонки лида через voximplant.statistic.get
     Возвращаем только звонки >= 40 сек с записью
