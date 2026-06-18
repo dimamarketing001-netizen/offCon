@@ -7,7 +7,6 @@ from config import B24_WEBHOOK
 
 urllib3.disable_warnings()
 
-
 def b24_request(method: str, params: dict = None) -> dict:
     """Базовый запрос к Б24"""
     url = f"{B24_WEBHOOK}{method}.json"
