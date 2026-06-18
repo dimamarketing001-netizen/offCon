@@ -1,3 +1,4 @@
+from typing import Optional, List, Dict
 import requests
 import time
 import urllib3
@@ -19,6 +20,7 @@ def b24_request(method: str, params: dict = None) -> dict:
                 timeout=90,
                 verify=False
             )
+            r.raise_for_status()
             data = r.json()
 
             if data.get('error') == 'QUERY_LIMIT_EXCEEDED':
@@ -29,20 +31,17 @@ def b24_request(method: str, params: dict = None) -> dict:
             return data
 
         except requests.exceptions.Timeout:
-            print(f"⏱️ Таймаут {method}, попытка {attempt + 1}/3")
+            print(f"⏱️ Таймаут {method}, попытка {attempt+1}/3")
             time.sleep(3)
         except Exception as e:
-            print(f"❌ Ошибка {method}: {e}")
+            print(f"❌ Ошибка Б24 {method}: {e}")
             time.sleep(2)
 
     return {}
 
 
 def get_unprocessed_leads() -> list:
-    """
-    Получаем лиды за 21 день которые:
-    - Ещё не отправлены в Метрику (UF_CRM_LEAD_METRIKA_SENT != 1)
-    """
+    """Лиды за 21 день которые не обработаны"""
     date_from = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
 
     leads = []
@@ -82,31 +81,38 @@ def get_unprocessed_leads() -> list:
 
 
 def get_calls_for_lead(lead_id: str) -> list:
-    """Получаем все звонки лида через voximplant"""
+    """
+    Получаем звонки лида через voximplant.statistic.get
+    Возвращаем только звонки >= 40 сек с записью
+    """
     data = b24_request("voximplant.statistic.get", {
         "FILTER": {
             "CRM_ENTITY_TYPE": "LEAD",
             "CRM_ENTITY_ID": lead_id
         },
         "SELECT": [
-            "ID", "CALL_DURATION", "CALL_RECORD_URL",
-            "CALL_START_DATE", "CALL_FAILED_CODE",
+            "ID",
+            "CALL_DURATION",
+            "CALL_RECORD_URL",
+            "CALL_START_DATE",
+            "CALL_FAILED_CODE",
             "PHONE_NUMBER"
         ],
         "ORDER": {"CALL_DURATION": "DESC"}
     })
 
-    calls = data.get('result', [])
+    all_calls = data.get('result', [])
 
-    # Фильтруем только успешные звонки с записью
     good_calls = [
-        c for c in calls
+        c for c in all_calls
         if int(c.get('CALL_DURATION', 0) or 0) >= 40
-           and c.get('CALL_RECORD_URL')
-           and c.get('CALL_FAILED_CODE') == '200'
+        and c.get('CALL_RECORD_URL')
+        and c.get('CALL_FAILED_CODE') == '200'
     ]
 
-    print(f"   Всего звонков: {len(calls)} | Подходящих: {len(good_calls)}")
+    print(f"   Всего звонков: {len(all_calls)} | "
+          f"Подходящих (>=40с + запись): {len(good_calls)}")
+
     return good_calls
 
 
