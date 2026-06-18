@@ -11,7 +11,6 @@ urllib3.disable_warnings()
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-
 def download_audio(url: str, call_id: str) -> Optional[str]:
     print(f"   📥 Скачиваем аудио...")
     try:
