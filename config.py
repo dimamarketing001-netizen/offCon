@@ -11,23 +11,23 @@ GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
 COMPANY_METRIKA_MAP = {
     "710292269": {
         "counter_id": "109482954",
-        "token":      "97cd861e1b4d47ac96b286c4eaa51423",
+        "token":      "y0__wgBELe_ke4IGPjkQyDqne79FzC_lOrsCOIpWjENCnLKn74WmNMNNRxgWI6T",
     },
     "710003041": {
         "counter_id": "109281290",
-        "token":      "2222aa52b80b4a30b053f4609d9621d8",
+        "token":      "y0__wgBEITzhfAFGMn1QyD8hu79FzDmwdSSCBDYiojwZM58EnVMEpUlO9pc43vS",
     },
     "710450259": {
         "counter_id": "103733376",
-        "token":      "270b4f8690e04214a2441a59ed9b89b7",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
     },
     "702962264": {
         "counter_id": "103733376",
-        "token":      "270b4f8690e04214a2441a59ed9b89b7",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
     },
     "710042583": {
         "counter_id": "109320307",
-        "token":      "97cd861e1b4d47ac96b286c4eaa51423",
+        "token":      "y0__wgBEOKP6uwIGKXqQyD2ku79FzC_lOrsCLTQoHuQWNDD8o8RbGy-ErlItk1n",
     },
 }
 
