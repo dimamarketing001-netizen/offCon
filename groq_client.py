@@ -1,9 +1,15 @@
 import re
 import json
 from groq import Groq
-from config import GROQ_API_KEY, GROQ_TEXT_MODEL, MIN_DEBT_AMOUNT
+from config import GROQ_TEXT_MODEL, MIN_DEBT_AMOUNT
 from typing import Optional, List, Dict
+import os
+from dotenv import load_dotenv
 
+
+load_dotenv()  # Добавить это ОБЯЗАТЕЛЬНО перед созданием клиента
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 
 
