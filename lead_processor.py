@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict
 import re
-from b24_client import get_calls_for_lead, update_lead
+from b24_client import get_calls_for_lead, update_lead, b24_request
 from audio_processor import process_call_audio
 from groq_client import analyze_transcript
 from metrika_client import send_conversion
@@ -11,7 +11,8 @@ from config import (
     FIELD_GPT_CITY,
     FIELD_GPT_DEBT,
     FIELD_GPT_QUALIFIED,
-    FIELD_GPT_RESULT
+    FIELD_GPT_RESULT,
+    FIELD_TRANSCRIPT
 )
 
 
@@ -42,6 +43,29 @@ def get_metrika_config(lead: dict) -> Optional[dict]:
 
     print(f"   ✅ UTM_CAMPAIGN={utm_campaign} → counter={config['counter_id']}")
     return config
+
+
+def get_existing_transcript(lead: dict) -> str:
+    """Берём уже сохранённый транскрипт из поля Б24"""
+    return (lead.get(FIELD_TRANSCRIPT) or '').strip()
+
+
+def save_transcript(lead_id: str, new_text: str, existing_text: str):
+    """
+    Добавляем новый транскрипт к существующему
+    Не перезаписываем — дописываем
+    """
+    if existing_text:
+        combined = existing_text + "\n---\n" + new_text
+    else:
+        combined = new_text
+
+    b24_request("crm.lead.update", {
+        "id": lead_id,
+        "fields": {FIELD_TRANSCRIPT: combined}
+    })
+    print(f"   💾 Транскрипт сохранён в Б24 ({len(combined)} симв)")
+    return combined
 
 
 def mark_lead(lead_id: str, qualified: bool, city: str = None,
@@ -101,53 +125,81 @@ def process_lead(lead: dict) -> str:
                   metrika_sent=sent)
         return 'sent' if sent else 'metrika_error'
 
-    # 4. Анализируем звонки
+    # 4. Берём существующий транскрипт из Б24
+    existing_transcript = get_existing_transcript(lead)
+    if existing_transcript:
+        print(f"   📄 Найден сохранённый транскрипт: {len(existing_transcript)} симв")
+
+    # 5. Анализируем звонки — транскрибируем новые
     print(f"   🔍 Проверяем звонки...")
     calls = get_calls_for_lead(lead_id)
 
-    if not calls:
-        print("   ❌ Нет подходящих звонков")
+    new_transcript_parts = []
+
+    if calls:
+        for call in calls:
+            call_id    = call.get('ID')
+            record_url = call.get('CALL_RECORD_URL')
+            duration   = call.get('CALL_DURATION')
+
+            # Проверяем не транскрибировали ли уже этот звонок
+            call_marker = f"[call:{call_id}]"
+            if call_marker in existing_transcript:
+                print(f"   ⏭️ Звонок {call_id} уже транскрибирован — пропускаем")
+                continue
+
+            print(f"\n   📞 Звонок ID={call_id}, {duration}с")
+
+            transcript = process_call_audio(record_url, call_id)
+            if not transcript:
+                continue
+
+            full_text = transcript.get('full_text', '')
+            if full_text:
+                # Добавляем маркер звонка
+                marked_text = f"{call_marker}\n{full_text}"
+                new_transcript_parts.append(marked_text)
+                print(f"   📝 Новый транскрипт: {len(full_text)} симв")
+
+    # 6. Если есть новые транскрипты — сохраняем в Б24
+    combined_transcript = existing_transcript
+    if new_transcript_parts:
+        new_text = "\n---\n".join(new_transcript_parts)
+        combined_transcript = save_transcript(
+            lead_id, new_text, existing_transcript
+        )
+
+    # 7. Если нет транскрипта вообще — пропускаем
+    if not combined_transcript:
+        print("   ❌ Нет транскрипта для анализа")
         return 'no_calls'
 
-    for call in calls:
-        call_id    = call.get('ID')
-        record_url = call.get('CALL_RECORD_URL')
-        duration   = call.get('CALL_DURATION')
+    # 8. Отправляем весь накопленный текст в Groq
+    print(f"\n   🤖 Анализируем текст ({len(combined_transcript)} симв)...")
+    analysis = analyze_transcript(combined_transcript)
 
-        print(f"\n   📞 Звонок ID={call_id}, {duration}с")
+    if analysis.get('qualified'):
+        city = analysis.get('city')
+        debt = analysis.get('debt_amount')
 
-        transcript = process_call_audio(record_url, call_id)
-        if not transcript:
-            continue
+        print(f"   ✅ КВАЛИФИЦИРОВАН! Город={city}, Долг={debt}")
 
-        full_text = transcript.get('full_text', '')
-        print(f"   📄 Текст ({len(full_text)} симв): {full_text[:200]}")
-
-        # Groq анализ
-        analysis = analyze_transcript(full_text, full_text)
-
-        if analysis.get('qualified'):
-            city = analysis.get('city')
-            debt = analysis.get('debt_amount')
-
-            print(f"   ✅ КВАЛИФИЦИРОВАН! Город={city}, Долг={debt}")
-
-            sent = send_conversion(
-                counter_id=metrika_cfg['counter_id'],
-                token=metrika_cfg['token'],
-                client_id=ym_uid,
-                phone=phone
-            )
-            mark_lead(
-                lead_id, qualified=True,
-                city=city, debt=debt,
-                result_text=f"Звонок {call_id} | {city} | {debt} | {full_text[:200]}",
-                metrika_sent=sent
-            )
-            return 'sent' if sent else 'metrika_error'
+        sent = send_conversion(
+            counter_id=metrika_cfg['counter_id'],
+            token=metrika_cfg['token'],
+            client_id=ym_uid,
+            phone=phone
+        )
+        mark_lead(
+            lead_id, qualified=True,
+            city=city, debt=debt,
+            result_text=f"{city} | {debt} | {combined_transcript[:200]}",
+            metrika_sent=sent
+        )
+        return 'sent' if sent else 'metrika_error'
 
     print(f"   ❌ Не квалифицирован")
     mark_lead(lead_id, qualified=False,
-              result_text="Не квалифицирован после анализа звонков",
+              result_text="Не квалифицирован",
               metrika_sent=False)
     return 'not_qualified'

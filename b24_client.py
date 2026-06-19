@@ -51,8 +51,12 @@ def get_unprocessed_leads() -> list:
                 "UF_CRM_LEAD_METRIKA_SENT": False
             },
             "select": [
-                "ID", "TITLE", "STATUS_ID",
-                "COMMENTS", "PHONE", "EMAIL",
+                "ID",
+                "TITLE",
+                "STATUS_ID",
+                "COMMENTS",
+                "PHONE",
+                "EMAIL",
                 "DATE_CREATE",
                 "UTM_SOURCE",
                 "UTM_MEDIUM",
@@ -60,7 +64,8 @@ def get_unprocessed_leads() -> list:
                 "UTM_CONTENT",
                 "UTM_TERM",
                 "UF_CRM_LEAD_METRIKA_SENT",
-                "UF_CRM_LEAD_GPT_QUALIFIED"
+                "UF_CRM_LEAD_GPT_QUALIFIED",
+                "UF_CRM_LEAD_TRANSCRIPT"
             ],
             "order": {"DATE_CREATE": "DESC"},
             "start": start
