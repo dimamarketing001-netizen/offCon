@@ -54,3 +54,4 @@ FIELD_GPT_RESULT    = "UF_CRM_LEAD_GPT_RESULT"
 
 # ===== ПУТИ =====
 TEMP_DIR = "/tmp/audio_processing"
+METRIKA_GOAL = "qualified_lead"
