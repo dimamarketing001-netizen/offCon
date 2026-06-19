@@ -48,7 +48,8 @@ def get_unprocessed_leads() -> list:
         data = b24_request("crm.lead.list", {
             "filter": {
                 ">=DATE_CREATE": date_from,
-                "UF_CRM_LEAD_METRIKA_SENT": False
+                # Исключаем лиды где METRIKA_SENT = 1 (уже отправлены)
+                "=UF_CRM_1781719858208": False
             },
             "select": [
                 "ID",
@@ -63,9 +64,9 @@ def get_unprocessed_leads() -> list:
                 "UTM_CAMPAIGN",
                 "UTM_CONTENT",
                 "UTM_TERM",
-                "UF_CRM_LEAD_METRIKA_SENT",
-                "UF_CRM_LEAD_GPT_QUALIFIED",
-                "UF_CRM_LEAD_TRANSCRIPT"
+                "UF_CRM_1781719858208",
+                "UF_CRM_1781720075678",
+                "UF_CRM_1781864619456"
             ],
             "order": {"DATE_CREATE": "DESC"},
             "start": start
