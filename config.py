@@ -1,8 +1,11 @@
+import os
+from dotenv import load_dotenv
+
 # ===== БИТРИКС24 =====
 B24_WEBHOOK = "https://b24-p41gmg.bitrix24.ru/rest/30/6k67fjhrmukh7ql7/"
 
 # ===== GROQ =====
-GROQ_API_KEY = "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"
+GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
 GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
 
 COMPANY_METRIKA_MAP = {
