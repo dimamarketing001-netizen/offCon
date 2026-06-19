@@ -40,7 +40,7 @@ def analyze_transcript(client_text: str, manager_text: str, max_retries: int = 3
 
     # ===== ОБРЕЗАЕМ ТЕКСТ ЕСЛИ СЛИШКОМ ДЛИННЫЙ =====
     # Groq может зависать на очень длинных промптах через прокси
-    MAX_TEXT_LEN = 1500
+    MAX_TEXT_LEN = 15000
     if client_text and len(client_text) > MAX_TEXT_LEN:
         client_text = client_text[:MAX_TEXT_LEN] + "..."
         print(f"   ✂️ Текст обрезан до {MAX_TEXT_LEN} символов")
