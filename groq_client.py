@@ -12,12 +12,12 @@ from config import GROQ_API_KEY, GROQ_TEXT_MODEL, MIN_DEBT_AMOUNT
 PROXY = "socks5://mufer:vRZVgh6c@185.94.167.13:10000"
 
 
-class TimeoutError(Exception):
+class GroqTimeoutError(Exception):
     pass
 
 
 def timeout_handler(signum, frame):
-    raise TimeoutError("Groq timeout")
+    raise GroqTimeoutError("Groq timeout")
 
 
 def get_client() -> Groq:
@@ -29,12 +29,11 @@ def get_client() -> Groq:
 
 
 def call_groq(prompt: str, max_attempts: int = 3) -> Optional[str]:
-    """Вызываем Groq через прокси с жёстким таймаутом через signal"""
+    """Вызываем Groq через прокси с жёстким таймаутом 40с"""
 
     for attempt in range(1, max_attempts + 1):
         print(f"   🤖 Groq запрос (попытка {attempt}/{max_attempts})...")
 
-        # Ставим жёсткий таймаут 40 секунд
         signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(40)
 
@@ -46,23 +45,24 @@ def call_groq(prompt: str, max_attempts: int = 3) -> Optional[str]:
                 temperature=0.1,
                 max_tokens=400
             )
-            signal.alarm(0)  # Сбрасываем таймаут
+            signal.alarm(0)
             result = completion.choices[0].message.content.strip()
             print(f"   ✅ Groq ответил")
             return result
 
-        except TimeoutError:
+        except GroqTimeoutError:
             signal.alarm(0)
-            print(f"   ⏱️ Жёсткий таймаут 40с (попытка {attempt}/{max_attempts}) — повторяем")
+            print(f"   ⏱️ Таймаут 40с (попытка {attempt}/{max_attempts}) — повторяем")
         except Exception as e:
             signal.alarm(0)
             print(f"   ❌ Ошибка (попытка {attempt}/{max_attempts}): {e}")
 
-    print("   ❌ Все попытки исчерпаны — пропускаем лид")
+    print("   ❌ Все попытки исчерпаны — пропускаем")
     return None
 
 
 def analyze_transcript(text: str) -> dict:
+    """Анализируем текст звонка — ищем город и долг"""
 
     prompt = f"""Ты анализируешь транскрипт телефонного разговора по банкротству.
 
@@ -71,20 +71,20 @@ def analyze_transcript(text: str) -> dict:
 
 Найди:
 1. ГОРОД клиента (только Екатеринбург или Челябинск)
-2. СУММУ ДОЛГА клиента в рублях (именно долг/задолженность)
+2. СУММУ ДОЛГА клиента в рублях (именно долг/задолженность, не просто любую сумму)
 
 Верни ТОЛЬКО валидный JSON без markdown:
 {{
   "city": "Екатеринбург" или "Челябинск" или null,
   "debt_amount": число или null,
-  "city_phrase": "цитата" или null,
-  "debt_phrase": "цитата" или null,
+  "city_phrase": "цитата где упомянут город" или null,
+  "debt_phrase": "цитата где упомянут долг" или null,
   "qualified": true или false
 }}
 
 Правила:
 - qualified=true ТОЛЬКО если city IN [Екатеринбург, Челябинск] И debt_amount >= {MIN_DEBT_AMOUNT}
-- Ищем именно ДОЛГ а не просто любую сумму
+- Ищем именно ДОЛГ/ЗАДОЛЖЕННОСТЬ а не просто любую сумму
 - "триста тысяч"=300000, "полмиллиона"=500000, "1.2 млн"=1200000
 - Если город не Екатеринбург и не Челябинск → city=null"""
 

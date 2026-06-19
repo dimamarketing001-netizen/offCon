@@ -36,7 +36,6 @@ def get_metrika_config(lead: dict) -> Optional[dict]:
         return None
 
     config = COMPANY_METRIKA_MAP.get(utm_campaign)
-
     if not config:
         print(f"   ⏭️ UTM_CAMPAIGN={utm_campaign} не найден в маппинге")
         return None
@@ -45,48 +44,85 @@ def get_metrika_config(lead: dict) -> Optional[dict]:
     return config
 
 
-def get_existing_transcript(lead: dict) -> str:
-    """Берём уже сохранённый транскрипт из поля Б24"""
-    return (lead.get(FIELD_TRANSCRIPT) or '').strip()
-
-
-def save_transcript(lead_id: str, new_text: str, existing_text: str):
+def parse_transcript_field(transcript_field: str) -> dict:
     """
-    Добавляем новый транскрипт к существующему
-    Не перезаписываем — дописываем
-    """
-    if existing_text:
-        combined = existing_text + "\n---\n" + new_text
-    else:
-        combined = new_text
+    Парсим поле транскрипта
+    Формат хранения:
+    [call:271856]
+    текст транскрипта...
+    ---
+    [call:272470]
+    текст транскрипта...
 
-    b24_request("crm.lead.update", {
-        "id": lead_id,
-        "fields": {FIELD_TRANSCRIPT: combined}
-    })
-    print(f"   💾 Транскрипт сохранён в Б24 ({len(combined)} симв)")
-    return combined
+    Возвращает: {call_id: text, ...}
+    """
+    result = {}
+    if not transcript_field:
+        return result
+
+    # Разбиваем по блокам звонков
+    blocks = re.split(r'\[call:(\d+)\]', transcript_field)
+
+    # blocks[0] — текст до первого маркера (пустой)
+    # blocks[1] — id первого звонка
+    # blocks[2] — текст первого звонка
+    # blocks[3] — id второго звонка и т.д.
+
+    i = 1
+    while i < len(blocks) - 1:
+        call_id = blocks[i].strip()
+        text = blocks[i + 1].strip().rstrip('---').strip()
+        if call_id and text:
+            result[call_id] = text
+        i += 2
+
+    return result
+
+
+def build_transcript_field(transcripts: dict) -> str:
+    """
+    Собираем поле транскрипта из словаря
+    {call_id: text, ...} → строка для сохранения в Б24
+    """
+    parts = []
+    for call_id, text in transcripts.items():
+        parts.append(f"[call:{call_id}]\n{text}")
+    return "\n---\n".join(parts)
 
 
 def mark_lead(lead_id: str, qualified: bool, city: str = None,
               debt: float = None, result_text: str = None,
               metrika_sent: bool = False):
     fields = {
-        FIELD_GPT_QUALIFIED: "Y" if qualified else "N",
-        FIELD_METRIKA_SENT:  "Y" if metrika_sent else "N",
-        FIELD_GPT_CITY:      city or '',
-        FIELD_GPT_DEBT:      debt or 0,
-        FIELD_GPT_RESULT:    result_text or ''
+        FIELD_GPT_QUALIFIED: True if qualified else False,
+        FIELD_METRIKA_SENT: True if metrika_sent else False,
+        FIELD_GPT_CITY: city or '',
+        FIELD_GPT_DEBT: debt or 0,
+        FIELD_GPT_RESULT: result_text or ''
     }
-    update_lead(lead_id, fields)
+    result = update_lead(lead_id, fields)
+    if result:
+        print(f"   💾 Лид {lead_id} обновлён в Б24")
+    else:
+        print(f"   ❌ Ошибка обновления лида {lead_id}")
+
+
+def save_transcripts(lead_id: str, transcripts: dict):
+    """Сохраняем все транскрипты в поле Б24"""
+    text = build_transcript_field(transcripts)
+    b24_request("crm.lead.update", {
+        "id": lead_id,
+        "fields": {FIELD_TRANSCRIPT: text}
+    })
+    print(f"   💾 Транскрипты сохранены: {len(transcripts)} звонков, {len(text)} симв")
 
 
 def process_lead(lead: dict) -> str:
-    lead_id   = lead.get('ID')
+    lead_id = lead.get('ID')
     status_id = lead.get('STATUS_ID')
-    comments  = lead.get('COMMENTS', '')
+    comments = lead.get('COMMENTS', '')
 
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print(f"📋 Лид ID={lead_id} | Статус={status_id}")
     print(f"   UTM_CAMPAIGN: {lead.get('UTM_CAMPAIGN') or '❌ нет'}")
 
@@ -94,24 +130,22 @@ def process_lead(lead: dict) -> str:
     metrika_cfg = get_metrika_config(lead)
     if not metrika_cfg:
         mark_lead(lead_id, qualified=False,
-                  result_text="Пропущен: нет UTM_CAMPAIGN в маппинге",
-                  metrika_sent=False)
+                  result_text="Пропущен: нет UTM_CAMPAIGN в маппинге")
         return 'no_utm'
 
     # 2. Проверяем _ym_uid
     ym_uid = parse_ym_uid(comments)
-    phone  = get_phone(lead)
+    phone = get_phone(lead)
 
     print(f"   _ym_uid: {ym_uid or '❌'} | Телефон: {phone or '❌'}")
 
     if not ym_uid:
         print(f"   ⏭️ Нет _ym_uid — пропускаем")
         mark_lead(lead_id, qualified=False,
-                  result_text="Пропущен: нет _ym_uid",
-                  metrika_sent=False)
+                  result_text="Пропущен: нет _ym_uid")
         return 'no_ymuid'
 
-    # 3. Статус уже квалифицирован
+    # 3. Статус уже квалифицирован — сразу в Метрику
     if status_id in QUALIFIED_STATUSES:
         print(f"   ✅ Статус квалифицирован: {status_id}")
         sent = send_conversion(
@@ -125,58 +159,68 @@ def process_lead(lead: dict) -> str:
                   metrika_sent=sent)
         return 'sent' if sent else 'metrika_error'
 
-    # 4. Берём существующий транскрипт из Б24
-    existing_transcript = get_existing_transcript(lead)
-    if existing_transcript:
-        print(f"   📄 Найден сохранённый транскрипт: {len(existing_transcript)} симв")
+    # 4. Загружаем уже сохранённые транскрипты из Б24
+    transcript_field = lead.get(FIELD_TRANSCRIPT, '') or ''
+    saved_transcripts = parse_transcript_field(transcript_field)
 
-    # 5. Анализируем звонки — транскрибируем новые
+    print(f"   📄 Сохранённых транскриптов: {len(saved_transcripts)} звонков")
+    for call_id in saved_transcripts:
+        print(f"      - call:{call_id} ({len(saved_transcripts[call_id])} симв)")
+
+    # 5. Получаем звонки лида
     print(f"   🔍 Проверяем звонки...")
     calls = get_calls_for_lead(lead_id)
 
-    new_transcript_parts = []
-
-    if calls:
-        for call in calls:
-            call_id    = call.get('ID')
-            record_url = call.get('CALL_RECORD_URL')
-            duration   = call.get('CALL_DURATION')
-
-            # Проверяем не транскрибировали ли уже этот звонок
-            call_marker = f"[call:{call_id}]"
-            if call_marker in existing_transcript:
-                print(f"   ⏭️ Звонок {call_id} уже транскрибирован — пропускаем")
-                continue
-
-            print(f"\n   📞 Звонок ID={call_id}, {duration}с")
-
-            transcript = process_call_audio(record_url, call_id)
-            if not transcript:
-                continue
-
-            full_text = transcript.get('full_text', '')
-            if full_text:
-                # Добавляем маркер звонка
-                marked_text = f"{call_marker}\n{full_text}"
-                new_transcript_parts.append(marked_text)
-                print(f"   📝 Новый транскрипт: {len(full_text)} симв")
-
-    # 6. Если есть новые транскрипты — сохраняем в Б24
-    combined_transcript = existing_transcript
-    if new_transcript_parts:
-        new_text = "\n---\n".join(new_transcript_parts)
-        combined_transcript = save_transcript(
-            lead_id, new_text, existing_transcript
-        )
-
-    # 7. Если нет транскрипта вообще — пропускаем
-    if not combined_transcript:
-        print("   ❌ Нет транскрипта для анализа")
+    if not calls and not saved_transcripts:
+        print("   ❌ Нет звонков и нет сохранённых транскриптов")
         return 'no_calls'
 
-    # 8. Отправляем весь накопленный текст в Groq
-    print(f"\n   🤖 Анализируем текст ({len(combined_transcript)} симв)...")
-    analysis = analyze_transcript(combined_transcript)
+    # 6. Транскрибируем новые звонки
+    new_transcribed = False
+
+    for call in calls:
+        call_id = str(call.get('ID'))
+        record_url = call.get('CALL_RECORD_URL')
+        duration = call.get('CALL_DURATION')
+
+        # Уже транскрибировали этот звонок?
+        if call_id in saved_transcripts:
+            print(f"   ⏭️ Звонок {call_id} уже транскрибирован — пропускаем")
+            continue
+
+        print(f"\n   📞 Новый звонок ID={call_id}, {duration}с — транскрибируем...")
+
+        transcript = process_call_audio(record_url, call_id)
+        if not transcript:
+            print(f"   ⚠️ Не удалось транскрибировать звонок {call_id}")
+            continue
+
+        full_text = transcript.get('full_text', '')
+        if full_text:
+            saved_transcripts[call_id] = full_text
+            new_transcribed = True
+            print(f"   ✅ Звонок {call_id} транскрибирован: {len(full_text)} симв")
+
+    # 7. Сохраняем обновлённые транскрипты в Б24
+    if new_transcribed:
+        save_transcripts(lead_id, saved_transcripts)
+
+    # 8. Если нет ни одного транскрипта
+    if not saved_transcripts:
+        print("   ❌ Нет транскриптов для анализа")
+        return 'no_calls'
+
+    # 9. Собираем весь текст для анализа
+    all_text = "\n\n".join([
+        f"[Звонок {call_id}]\n{text}"
+        for call_id, text in saved_transcripts.items()
+    ])
+
+    print(f"\n   🤖 Отправляем в Groq ({len(all_text)} симв)...")
+    print(f"   Текст: {all_text[:300]}")
+
+    # 10. Анализируем через Groq
+    analysis = analyze_transcript(all_text)
 
     if analysis.get('qualified'):
         city = analysis.get('city')
@@ -193,13 +237,13 @@ def process_lead(lead: dict) -> str:
         mark_lead(
             lead_id, qualified=True,
             city=city, debt=debt,
-            result_text=f"{city} | {debt} | {combined_transcript[:200]}",
+            result_text=f"{city} | {debt} | {all_text[:300]}",
             metrika_sent=sent
         )
         return 'sent' if sent else 'metrika_error'
 
+    # 11. Не квалифицирован
     print(f"   ❌ Не квалифицирован")
     mark_lead(lead_id, qualified=False,
-              result_text="Не квалифицирован",
-              metrika_sent=False)
+              result_text="Не квалифицирован после анализа звонков")
     return 'not_qualified'
