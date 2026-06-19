@@ -1,45 +1,55 @@
+from typing import Optional
 import re
 import json
-from groq import Groq
-from config import GROQ_TEXT_MODEL, MIN_DEBT_AMOUNT
-from typing import Optional, List, Dict
 import os
+import httpx
+from groq import Groq
 from dotenv import load_dotenv
+load_dotenv()
 
+from config import GROQ_API_KEY, GROQ_TEXT_MODEL, MIN_DEBT_AMOUNT
 
-load_dotenv()  # Добавить это ОБЯЗАТЕЛЬНО перед созданием клиента
+# ===== ПРОКСИ =====
+PROXY = "socks5://mufer:vRZVgh6c@185.94.167.13:10000"
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-client = Groq(api_key=GROQ_API_KEY)
+http_client = httpx.Client(
+    proxy=PROXY,
+    timeout=60
+)
+
+client = Groq(
+    api_key=GROQ_API_KEY,
+    http_client=http_client
+)
 
 
 def analyze_transcript(client_text: str, manager_text: str) -> dict:
     """
-    Анализируем текст звонка через Groq LLM
+    Анализируем текст звонка через Groq
     Ищем город и сумму долга
     """
 
     prompt = f"""Ты анализируешь транскрипт телефонного разговора по банкротству.
 
-Разговор разделён по участникам:
-КЛИЕНТ: {client_text or '(нет текста)'}
-МЕНЕДЖЕР: {manager_text or '(нет текста)'}
+Текст разговора:
+{client_text or '(нет текста)'}
 
 Твоя задача — найти:
 1. ГОРОД клиента (только Екатеринбург или Челябинск)
-2. ОБЩУЮ СУММУ ДОЛГА клиента в рублях
+2. СУММУ ДОЛГА клиента в рублях (именно долг/задолженность, не просто любую сумму)
 
 Верни ТОЛЬКО валидный JSON без markdown:
 {{
   "city": "Екатеринбург" или "Челябинск" или null,
   "debt_amount": число или null,
-  "city_phrase": "цитата из текста" или null,
-  "debt_phrase": "цитата из текста" или null,
+  "city_phrase": "цитата где упомянут город" или null,
+  "debt_phrase": "цитата где упомянут долг" или null,
   "qualified": true или false
 }}
 
 Правила:
 - qualified=true ТОЛЬКО если city IN [Екатеринбург, Челябинск] И debt_amount >= {MIN_DEBT_AMOUNT}
+- Ищем именно ДОЛГ/ЗАДОЛЖЕННОСТЬ а не просто любую сумму
 - Суммы: "триста тысяч"=300000, "полмиллиона"=500000, "1.2 млн"=1200000
 - Если город не Екатеринбург и не Челябинск → city=null"""
 
@@ -56,9 +66,13 @@ def analyze_transcript(client_text: str, manager_text: str) -> dict:
         json_match = re.search(r'\{.*\}', result, re.DOTALL)
         if json_match:
             parsed = json.loads(json_match.group())
-            print(f"   🤖 GPT: city={parsed.get('city')}, "
+            print(f"   🤖 Groq: city={parsed.get('city')}, "
                   f"debt={parsed.get('debt_amount')}, "
                   f"qualified={parsed.get('qualified')}")
+            if parsed.get('city_phrase'):
+                print(f"   📍 Город цитата: {parsed.get('city_phrase')}")
+            if parsed.get('debt_phrase'):
+                print(f"   💰 Долг цитата: {parsed.get('debt_phrase')}")
             return parsed
 
     except Exception as e:
