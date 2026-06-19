@@ -2,7 +2,7 @@ from typing import Optional, List, Dict
 import re
 from b24_client import get_calls_for_lead, update_lead
 from audio_processor import process_call_audio
-from analyzer import analyze_text          # новый простой анализатор
+from groq_client import analyze_transcript
 from metrika_client import send_conversion
 from config import (
     QUALIFIED_STATUSES,
@@ -28,12 +28,7 @@ def get_phone(lead: dict) -> Optional[str]:
 
 
 def get_metrika_config(lead: dict) -> Optional[dict]:
-    """
-    Берём UTM_CAMPAIGN из лида → ищем в маппинге
-    Возвращает {counter_id, token} или None
-    """
-    utm_campaign = lead.get('UTM_CAMPAIGN', '') or ''
-    utm_campaign = utm_campaign.strip()
+    utm_campaign = (lead.get('UTM_CAMPAIGN') or '').strip()
 
     if not utm_campaign:
         print(f"   ⏭️ Нет UTM_CAMPAIGN — пропускаем")
@@ -69,9 +64,9 @@ def process_lead(lead: dict) -> str:
 
     print(f"\n{'='*55}")
     print(f"📋 Лид ID={lead_id} | Статус={status_id}")
-    print(f"   UTM_CAMPAIGN: {lead.get('UTM_CAMPAIGN', '❌ нет')}")
+    print(f"   UTM_CAMPAIGN: {lead.get('UTM_CAMPAIGN') or '❌ нет'}")
 
-    # ===== 1. Проверяем UTM_CAMPAIGN → маппинг =====
+    # 1. Проверяем UTM_CAMPAIGN
     metrika_cfg = get_metrika_config(lead)
     if not metrika_cfg:
         mark_lead(lead_id, qualified=False,
@@ -79,7 +74,7 @@ def process_lead(lead: dict) -> str:
                   metrika_sent=False)
         return 'no_utm'
 
-    # ===== 2. Проверяем _ym_uid =====
+    # 2. Проверяем _ym_uid
     ym_uid = parse_ym_uid(comments)
     phone  = get_phone(lead)
 
@@ -92,10 +87,9 @@ def process_lead(lead: dict) -> str:
                   metrika_sent=False)
         return 'no_ymuid'
 
-    # ===== 3. Статус уже квалифицированный =====
+    # 3. Статус уже квалифицирован
     if status_id in QUALIFIED_STATUSES:
         print(f"   ✅ Статус квалифицирован: {status_id}")
-
         sent = send_conversion(
             counter_id=metrika_cfg['counter_id'],
             token=metrika_cfg['token'],
@@ -105,10 +99,9 @@ def process_lead(lead: dict) -> str:
         mark_lead(lead_id, qualified=True,
                   result_text=f"Квалифицирован по статусу: {status_id}",
                   metrika_sent=sent)
-
         return 'sent' if sent else 'metrika_error'
 
-    # ===== 4. Анализируем звонки =====
+    # 4. Анализируем звонки
     print(f"   🔍 Проверяем звонки...")
     calls = get_calls_for_lead(lead_id)
 
@@ -130,8 +123,8 @@ def process_lead(lead: dict) -> str:
         full_text = transcript.get('full_text', '')
         print(f"   📄 Текст ({len(full_text)} симв): {full_text[:200]}")
 
-        # Анализируем
-        analysis = analyze_text(full_text)
+        # Groq анализ
+        analysis = analyze_transcript(full_text, full_text)
 
         if analysis.get('qualified'):
             city = analysis.get('city')
@@ -145,18 +138,16 @@ def process_lead(lead: dict) -> str:
                 client_id=ym_uid,
                 phone=phone
             )
-
             mark_lead(
                 lead_id, qualified=True,
                 city=city, debt=debt,
                 result_text=f"Звонок {call_id} | {city} | {debt} | {full_text[:200]}",
                 metrika_sent=sent
             )
-
             return 'sent' if sent else 'metrika_error'
 
     print(f"   ❌ Не квалифицирован")
     mark_lead(lead_id, qualified=False,
-              result_text="Не квалифицирован",
+              result_text="Не квалифицирован после анализа звонков",
               metrika_sent=False)
     return 'not_qualified'
