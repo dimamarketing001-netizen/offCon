@@ -3,14 +3,27 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from groq import Groq
+import httpx
 
 api_key = os.getenv("GROQ_API_KEY")
 print(f"API Key: {api_key[:20] if api_key else 'НЕ НАЙДЕН'}...")
 
-client = Groq(api_key=api_key)
+# Прокси
+PROXY = "socks5://mufer:vRZVgh6c@185.94.167.13:10000"
+
+# Клиент с прокси
+http_client = httpx.Client(
+    proxy=PROXY,
+    timeout=30
+)
+
+client = Groq(
+    api_key=api_key,
+    http_client=http_client
+)
 
 # Тест 1: простой запрос
-print("\n🤖 Тест 1: простой запрос...")
+print("\n🤖 Тест 1: простой запрос через прокси...")
 try:
     r = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -21,23 +34,14 @@ try:
 except Exception as e:
     print(f"❌ Ошибка: {e}")
 
-# Тест 2: список доступных моделей
-print("\n📋 Тест 2: список моделей...")
+# Тест 2: проверяем IP через прокси
+print("\n🌐 Тест 2: проверяем IP...")
 try:
-    models = client.models.list()
-    for m in models.data:
-        print(f"   - {m.id}")
-except Exception as e:
-    print(f"❌ Ошибка: {e}")
-
-# Тест 3: другая модель
-print("\n🤖 Тест 3: модель llama-3.1-8b-instant...")
-try:
-    r = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": "привет"}],
-        max_tokens=50
+    r = httpx.get(
+        "https://api.ipify.org?format=json",
+        proxy=PROXY,
+        timeout=10
     )
-    print(f"✅ Ответ: {r.choices[0].message.content}")
+    print(f"✅ Наш IP: {r.json()}")
 except Exception as e:
     print(f"❌ Ошибка: {e}")
