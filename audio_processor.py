@@ -1,13 +1,23 @@
+# audio_processor.py
 from typing import Optional, List
 import os
 import requests
 import urllib3
-import speech_recognition as sr
 from pydub import AudioSegment
+from faster_whisper import WhisperModel
 from config import TEMP_DIR
 
 urllib3.disable_warnings()
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# ===== Загружаем модель один раз при старте =====
+print("🔄 Загрузка Whisper модели...")
+_whisper_model = WhisperModel(
+    "medium",
+    device="cpu",
+    compute_type="int8"
+)
+print("✅ Whisper модель загружена")
 
 
 def download_audio(url: str, call_id: str) -> Optional[str]:
@@ -27,55 +37,45 @@ def download_audio(url: str, call_id: str) -> Optional[str]:
         return None
 
 
-def convert_to_wav(mp3_path: str, call_id: str) -> Optional[str]:
+def transcribe_audio(mp3_path: str, call_id: str) -> Optional[str]:
+    """
+    Транскрибируем MP3 через Faster-Whisper
+    Весь файл целиком — без нарезки
+    """
     try:
-        wav_path = os.path.join(TEMP_DIR, f"{call_id}_audio.wav")
-        audio = AudioSegment.from_file(mp3_path, format='mp3')
-        audio.export(wav_path, format='wav')
-        print(f"   ✅ Конвертирован в WAV")
-        return wav_path
+        print(f"   🎙️ Транскрибируем через Faster-Whisper...")
+
+        segments, info = _whisper_model.transcribe(
+            mp3_path,
+            language="ru",
+            beam_size=5,
+            best_of=5,
+            temperature=0.0,
+            condition_on_previous_text=True,
+            initial_prompt=(
+                "Это запись телефонного разговора между менеджером "
+                "и клиентом по теме банкротства и списания долгов. "
+                "Менеджер предлагает услуги по банкротству, клиент "
+                "рассказывает о своих долгах, городе проживания и "
+                "финансовой ситуации."
+            )
+        )
+
+        texts = []
+        for segment in segments:
+            text = segment.text.strip()
+            if text:
+                texts.append(text)
+
+        full_text = " ".join(texts)
+        print(f"   ✅ Транскрипт: {len(full_text)} символов")
+        print(f"   📄 Текст: {full_text[:300]}")
+
+        return full_text
+
     except Exception as e:
-        print(f"   ❌ Ошибка конвертации: {e}")
+        print(f"   ❌ Ошибка транскрибации: {e}")
         return None
-
-
-def split_into_segments(wav_path: str, call_id: str, segment_duration: int = 59) -> List[str]:
-    try:
-        audio      = AudioSegment.from_wav(wav_path)
-        duration_ms = len(audio)
-        segment_ms  = segment_duration * 1000
-        segments    = []
-        idx = 0
-        start = 0
-
-        while start < duration_ms:
-            end      = min(start + segment_ms, duration_ms)
-            segment  = audio[start:end]
-            seg_path = os.path.join(TEMP_DIR, f"{call_id}_seg{idx}.wav")
-            segment.export(seg_path, format='wav')
-            segments.append(seg_path)
-            start = end
-            idx  += 1
-
-        print(f"   ✅ Нарезано {len(segments)} сегментов по {segment_duration}с")
-        return segments
-    except Exception as e:
-        print(f"   ❌ Ошибка нарезки: {e}")
-        return []
-
-
-def transcribe_segment(seg_path: str) -> str:
-    try:
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(seg_path) as source:
-            audio_data = recognizer.record(source)
-        text = recognizer.recognize_google(audio_data, language="ru-RU")
-        return text
-    except sr.UnknownValueError:
-        return ""
-    except Exception as e:
-        print(f"   ⚠️ Ошибка сегмента: {e}")
-        return ""
 
 
 def cleanup_files(paths: list):
@@ -91,50 +91,27 @@ def process_call_audio(call_record_url: str, call_id: str) -> Optional[dict]:
     print(f"\n   🔊 Обрабатываем звонок {call_id}...")
 
     mp3_path = None
-    wav_path = None
 
     try:
-        # 1. Скачиваем
+        # 1. Скачиваем MP3
         mp3_path = download_audio(call_record_url, call_id)
         if not mp3_path:
             return None
 
-        # 2. Конвертируем
-        wav_path = convert_to_wav(mp3_path, call_id)
-        if not wav_path:
+        # 2. Транскрибируем целиком через Faster-Whisper
+        full_text = transcribe_audio(mp3_path, call_id)
+
+        cleanup_files([mp3_path])
+
+        if not full_text:
             return None
-
-        # 3. Нарезаем на сегменты
-        segments = split_into_segments(wav_path, call_id)
-        if not segments:
-            return None
-
-        # 4. Транскрибируем каждый сегмент
-        texts = []
-        for i, seg_path in enumerate(segments):
-            text = transcribe_segment(seg_path)
-            if text:
-                texts.append(text)
-                print(f"      Сег {i+1}/{len(segments)}: {text[:80]}...")
-            else:
-                print(f"      Сег {i+1}/{len(segments)}: (тишина)")
-            cleanup_files([seg_path])
-
-        # 5. Склеиваем
-        full_text = ". ".join(texts)
-        print(f"   ✅ Транскрипт: {len(full_text)} символов")
-        print(f"   📄 Полный текст:\n   {full_text}")
-
-        cleanup_files([mp3_path, wav_path])
 
         return {
             'call_id':   call_id,
-            'client':    full_text,
-            'manager':   full_text,
             'full_text': full_text
         }
 
     except Exception as e:
         print(f"   ❌ Критическая ошибка: {e}")
-        cleanup_files([mp3_path, wav_path])
+        cleanup_files([mp3_path])
         return None

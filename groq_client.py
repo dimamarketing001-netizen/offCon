@@ -1,116 +1,171 @@
+# groq_client.py
 from typing import Optional
+import os
 import re
 import json
-import httpx
+import time
 import threading
-from groq import Groq
+from google import genai
 from dotenv import load_dotenv
 load_dotenv()
 
-from config import GROQ_API_KEY, GROQ_TEXT_MODEL, MIN_DEBT_AMOUNT
+from config import MIN_DEBT_AMOUNT
 
-PROXY = "socks5://mufer:vRZVgh6c@185.94.167.13:10000"
+# ===== НАСТРОЙКИ =====
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PROXY          = "socks5://mufer:vRZVgh6c@185.94.167.13:10000"
+
+MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
+
+PROMPT_TEMPLATE = """Ты анализируешь транскрипт телефонного разговора между менеджером и клиентом по теме банкротства.
+
+Текст разговора:
+{text}
+
+Твоя задача — найти:
+1. ГОРОД клиента (только Екатеринбург или Челябинск)
+2. ОБЩУЮ СУММУ ДОЛГА клиента в рублях
+
+ВАЖНО по долгу:
+- Нужна именно ОБЩАЯ СУММА ВСЕХ ДОЛГОВ/ЗАДОЛЖЕННОСТЕЙ клиента
+- НЕ путай с ежемесячным платежом по кредиту (то что платит в месяц)
+- НЕ путай с суммой одного кредита если их несколько
+- Если клиент говорит "плачу 15 000 в месяц" — это НЕ долг
+- Если клиент говорит "долг 500 000" или "задолженность миллион" — это долг
+- Сокращения переводи: "500к" = 500000, "1.5 млн" = 1500000, "полмиллиона" = 500000
+
+Верни ТОЛЬКО валидный JSON без markdown:
+{{
+  "city": "Екатеринбург" или "Челябинск" или null,
+  "debt_amount": число в рублях или null,
+  "city_phrase": "точная цитата из текста где упомянут город" или null,
+  "debt_phrase": "точная цитата из текста где упомянут долг, а если несколько долгов, то несколько цитат" или null,
+  "qualified": true или false
+}}
+
+Правила квалификации:
+- qualified=true ТОЛЬКО если city IN [Екатеринбург, Челябинск] И debt_amount >= {min_debt}
+- Если город не Екатеринбург и не Челябинск → city=null, qualified=false"""
 
 
-def get_client() -> Groq:
-    http_client = httpx.Client(
-        proxy=PROXY,
-        timeout=httpx.Timeout(15.0)
-    )
-    return Groq(api_key=GROQ_API_KEY, http_client=http_client)
+def _extract_retry_delay(error_str: str) -> float:
+    match = re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?([\d.]+)s", error_str)
+    if match:
+        return min(round(float(match.group(1))) + 1, 60)
+    return 10
 
 
-def call_groq_in_thread(prompt: str, result_container: list):
-    """Запускаем Groq в отдельном потоке"""
+def _set_proxy():
+    os.environ["HTTP_PROXY"]  = PROXY
+    os.environ["HTTPS_PROXY"] = PROXY
+    os.environ["http_proxy"]  = PROXY
+    os.environ["https_proxy"] = PROXY
+
+
+def _clear_proxy():
+    for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
+        os.environ.pop(key, None)
+
+
+def _call_gemini_in_thread(prompt: str, result_container: list):
+    """Запускаем Gemini в отдельном потоке"""
     try:
-        client = get_client()
-        completion = client.chat.completions.create(
-            model=GROQ_TEXT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=400
-        )
-        result_container.append(completion.choices[0].message.content.strip())
+        _set_proxy()
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        for model_name in MODELS:
+            try:
+                print(f"   🤖 Gemini модель: {model_name}...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[prompt]
+                )
+
+                if not response.text:
+                    print(f"   ⚠️ {model_name}: пустой ответ")
+                    continue
+
+                result_container.append(response.text.strip())
+                return
+
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                    delay = _extract_retry_delay(error_str)
+                    print(f"   ⏳ {model_name}: 429 лимит, ждём {delay}с...")
+                    time.sleep(delay)
+                    continue
+                print(f"   ❌ {model_name}: {e}")
+                continue
+
+        result_container.append("ERROR: все модели недоступны")
+
     except Exception as e:
         result_container.append(f"ERROR: {e}")
+    finally:
+        _clear_proxy()
 
 
-def call_groq(prompt: str, max_attempts: int = 3, timeout: int = 45) -> Optional[str]:
-    """
-    Вызываем Groq в отдельном потоке с жёстким таймаутом
-    Если поток завис — убиваем и пробуем снова
-    """
+def call_gemini(prompt: str, max_attempts: int = 3, timeout: int = 60) -> Optional[str]:
+    """Вызываем Gemini через поток с таймаутом"""
 
     for attempt in range(1, max_attempts + 1):
-        print(f"   🤖 Groq запрос (попытка {attempt}/{max_attempts}, таймаут {timeout}с)...")
+        print(f"   🌐 Gemini запрос (попытка {attempt}/{max_attempts})...")
 
         result_container = []
 
         thread = threading.Thread(
-            target=call_groq_in_thread,
+            target=_call_gemini_in_thread,
             args=(prompt, result_container),
-            daemon=True  # Поток умрёт вместе с основным процессом
+            daemon=True
         )
 
         thread.start()
-        thread.join(timeout=timeout)  # Ждём максимум timeout секунд
+        thread.join(timeout=timeout)
 
         if thread.is_alive():
-            # Поток завис — не можем убить, но идём дальше
-            print(f"   ⏱️ Таймаут {timeout}с (попытка {attempt}/{max_attempts}) — поток завис, пробуем снова")
+            print(f"   ⏱️ Таймаут {timeout}с (попытка {attempt}/{max_attempts}) — повторяем")
             continue
 
         if not result_container:
-            print(f"   ⚠️ Пустой ответ (попытка {attempt}/{max_attempts})")
+            print(f"   ⚠️ Пустой контейнер (попытка {attempt}/{max_attempts})")
             continue
 
         result = result_container[0]
 
         if result.startswith("ERROR:"):
-            print(f"   ❌ Ошибка (попытка {attempt}/{max_attempts}): {result}")
+            print(f"   ❌ {result}")
             continue
 
-        print(f"   ✅ Groq ответил успешно")
         return result
 
-    print("   ❌ Все попытки исчерпаны — пропускаем лид")
+    print("   ❌ Все попытки исчерпаны")
     return None
 
 
 def analyze_transcript(text: str) -> dict:
-    """Анализируем текст звонка — ищем город и долг"""
+    """Анализируем текст звонка через Gemini"""
 
-    prompt = f"""Ты анализируешь транскрипт телефонного разговора по банкротству.
+    prompt = PROMPT_TEMPLATE.format(
+        text=text or "(нет текста)",
+        min_debt=MIN_DEBT_AMOUNT
+    )
 
-Текст разговора:
-{text or '(нет текста)'}
-
-Найди:
-1. ГОРОД клиента (только Екатеринбург или Челябинск)
-2. СУММУ ДОЛГА клиента в рублях (именно долг/задолженность, не просто любую сумму)
-
-Верни ТОЛЬКО валидный JSON без markdown:
-{{
-  "city": "Екатеринбург" или "Челябинск" или null,
-  "debt_amount": число или null,
-  "city_phrase": "цитата где упомянут город" или null,
-  "debt_phrase": "цитата где упомянут долг" или null,
-  "qualified": true или false
-}}
-
-Правила:
-- qualified=true ТОЛЬКО если city IN [Екатеринбург, Челябинск] И debt_amount >= {MIN_DEBT_AMOUNT}
-- Ищем именно ДОЛГ/ЗАДОЛЖЕННОСТЬ а не просто любую сумму
-- "триста тысяч"=300000, "полмиллиона"=500000, "1.2 млн"=1200000
-- Если город не Екатеринбург и не Челябинск → city=null"""
-
-    result = call_groq(prompt)
+    result = call_gemini(prompt)
 
     if not result:
         return {"qualified": False, "city": None, "debt_amount": None}
 
     try:
-        json_match = re.search(r'\{.*\}', result, re.DOTALL)
+        # Убираем markdown если есть
+        clean = re.sub(r"```json|```", "", result).strip()
+        json_match = re.search(r'\{.*\}', clean, re.DOTALL)
+
         if json_match:
             parsed = json.loads(json_match.group())
             print(f"   📊 city={parsed.get('city')}, "
@@ -121,7 +176,8 @@ def analyze_transcript(text: str) -> dict:
             if parsed.get('debt_phrase'):
                 print(f"   💰 {parsed.get('debt_phrase')}")
             return parsed
+
     except Exception as e:
-        print(f"   ❌ Ошибка парсинга JSON: {e}")
+        print(f"   ❌ Ошибка парсинга JSON: {e}, ответ: {result[:200]}")
 
     return {"qualified": False, "city": None, "debt_amount": None}
