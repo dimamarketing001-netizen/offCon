@@ -1,6 +1,8 @@
 # audio_processor.py
 from typing import Optional, List
 import os
+import time
+import traceback
 import requests
 import urllib3
 from pydub import AudioSegment
@@ -43,8 +45,16 @@ def transcribe_audio(mp3_path: str, call_id: str) -> Optional[str]:
     Весь файл целиком — без нарезки
     """
     try:
+        # --- Получаем размер файла ---
+        file_size_mb = os.path.getsize(mp3_path) / (1024 * 1024)
         print(f"   🎙️ Транскрибируем через Faster-Whisper...")
+        print(f"   📁 Размер файла: {file_size_mb:.2f} MB")
+        print(f"   ⚙️  Устройство: CPU | Модель: medium | int8")
+        print(f"   ⏳ Запускаем transcribe()...")
 
+        start_time = time.time()
+
+        # --- Запуск транскрибации ---
         segments, info = _whisper_model.transcribe(
             mp3_path,
             language="ru",
@@ -61,20 +71,49 @@ def transcribe_audio(mp3_path: str, call_id: str) -> Optional[str]:
             )
         )
 
+        print(f"   ✅ transcribe() вернул генератор за {time.time() - start_time:.1f}с")
+        print(f"   🌍 Определён язык: {info.language} (вероятность: {info.language_probability:.2f})")
+        print(f"   ⏱️  Длительность аудио: {info.duration:.1f} сек ({info.duration / 60:.1f} мин)")
+        print(f"   🔄 Начинаем итерацию по сегментам...")
+
+        # --- Итерация с логами ---
         texts = []
+        segment_count = 0
+        last_log_time = time.time()
+
         for segment in segments:
+            segment_count += 1
             text = segment.text.strip()
+
+            # Лог каждые 5 секунд реального времени
+            now = time.time()
+            if now - last_log_time >= 5:
+                elapsed = now - start_time
+                print(
+                    f"   ⏳ Сегмент #{segment_count} | "
+                    f"[{segment.start:.1f}s → {segment.end:.1f}s] | "
+                    f"Прошло: {elapsed:.0f}с"
+                )
+                last_log_time = now
+
             if text:
                 texts.append(text)
+                # Первые 3 сегмента всегда логируем
+                if segment_count <= 3:
+                    print(f"   📝 [{segment.start:.1f}→{segment.end:.1f}] {text[:80]}")
+
+        elapsed_total = time.time() - start_time
+        print(f"   ✅ Итерация завершена: {segment_count} сегментов за {elapsed_total:.1f}с")
 
         full_text = " ".join(texts)
         print(f"   ✅ Транскрипт: {len(full_text)} символов")
-        print(f"   📄 Текст: {full_text[:300]}")
+        print(f"   📄 Текст (первые 300): {full_text[:300]}")
 
-        return full_text
+        return full_text if full_text else None
 
     except Exception as e:
         print(f"   ❌ Ошибка транскрибации: {e}")
+        print(f"   🔍 Traceback:\n{traceback.format_exc()}")
         return None
 
 
@@ -113,5 +152,6 @@ def process_call_audio(call_record_url: str, call_id: str) -> Optional[dict]:
 
     except Exception as e:
         print(f"   ❌ Критическая ошибка: {e}")
+        print(f"   🔍 Traceback:\n{traceback.format_exc()}")
         cleanup_files([mp3_path])
         return None
