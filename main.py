@@ -3,7 +3,6 @@
 """
 
 import time
-import schedule
 from datetime import datetime
 from b24_client import get_unprocessed_leads
 from lead_processor import process_lead
@@ -53,14 +52,4 @@ def run():
 
 
 if __name__ == '__main__':
-    import sys
-
-    if '--once' in sys.argv:
-        run()
-    else:
-        print("⏰ Планировщик запущен (каждые 5 минут)")
-        schedule.every(5).minutes.do(run)
-        run()
-        while True:
-            schedule.run_pending()
-            time.sleep(30)
+    run()
