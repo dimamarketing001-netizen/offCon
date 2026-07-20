@@ -25,6 +25,30 @@ COMPANY_METRIKA_MAP = {
         "counter_id": "103733376",
         "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
     },
+    "712771041": {
+        "counter_id": "110523730",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
+    },
+    "712775251": {
+        "counter_id": "110523730",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
+    },
+    "712770577": {
+        "counter_id": "110523730",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
+    },
+    "712775250": {
+        "counter_id": "110523730",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
+    },
+    "712522667": {
+        "counter_id": "110523730",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
+    },
+    "712775249": {
+        "counter_id": "110523730",
+        "token":      "y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
+    },
     "710042583": {
         "counter_id": "109320307",
         "token":      "y0__wgBEOKP6uwIGKXqQyD2ku79FzC_lOrsCLTQoHuQWNDD8o8RbGy-ErlItk1n",

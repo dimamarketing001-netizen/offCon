@@ -1,8 +1,6 @@
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 import re
 from b24_client import get_calls_for_lead, update_lead, b24_request
-from audio_processor import process_call_audio
-from groq_client import analyze_transcript
 from metrika_client import send_conversion
 from config import (
     QUALIFIED_STATUSES,
@@ -12,7 +10,6 @@ from config import (
     FIELD_GPT_DEBT,
     FIELD_GPT_QUALIFIED,
     FIELD_GPT_RESULT,
-    FIELD_TRANSCRIPT
 )
 
 
@@ -44,50 +41,163 @@ def get_metrika_config(lead: dict) -> Optional[dict]:
     return config
 
 
-def parse_transcript_field(transcript_field: str) -> dict:
+def extract_field(comments: str, field_name: str) -> Optional[str]:
     """
-    Парсим поле транскрипта
-    Формат хранения:
-    [call:271856]
-    текст транскрипта...
-    ---
-    [call:272470]
-    текст транскрипта...
-
-    Возвращает: {call_id: text, ...}
+    Извлекаем значение поля из комментария.
+    Ищем строку вида 'field_name: значение'
     """
-    result = {}
-    if not transcript_field:
-        return result
-
-    # Разбиваем по блокам звонков
-    blocks = re.split(r'\[call:(\d+)\]', transcript_field)
-
-    # blocks[0] — текст до первого маркера (пустой)
-    # blocks[1] — id первого звонка
-    # blocks[2] — текст первого звонка
-    # blocks[3] — id второго звонка и т.д.
-
-    i = 1
-    while i < len(blocks) - 1:
-        call_id = blocks[i].strip()
-        text = blocks[i + 1].strip().rstrip('---').strip()
-        if call_id and text:
-            result[call_id] = text
-        i += 2
-
-    return result
+    pattern = re.compile(
+        r'^\s*' + re.escape(field_name) + r'\s*:\s*(.+)$',
+        re.MULTILINE | re.IGNORECASE
+    )
+    match = pattern.search(comments or '')
+    if match:
+        return match.group(1).strip()
+    return None
 
 
-def build_transcript_field(transcripts: dict) -> str:
+def detect_comment_type(comments: str) -> Optional[str]:
     """
-    Собираем поле транскрипта из словаря
-    {call_id: text, ...} → строка для сохранения в Б24
+    Определяем тип комментария:
+    - 'quiz_questions' — формат с вопросами 1__Ваш_долг...
+    - 'debt_quiz' — формат с region, delay_status, source: debt-quiz
+    - None — неизвестный формат
     """
-    parts = []
-    for call_id, text in transcripts.items():
-        parts.append(f"[call:{call_id}]\n{text}")
-    return "\n---\n".join(parts)
+    if not comments:
+        return None
+
+    if '1__Ваш_долг_более_500_000_рублей' in comments:
+        return 'quiz_questions'
+
+    if 'source: debt-quiz' in comments or 'delay_status:' in comments:
+        return 'debt_quiz'
+
+    return None
+
+
+def check_quiz_questions(comments: str) -> dict:
+    """
+    Проверяем формат с вопросами (1__Ваш_долг...).
+
+    Квалификация:
+    1. долг >= 500 000 — Да
+    2. кредиторы подавали в суд — Нет или Не знаю
+    3. исполнительное производство — Нет или Не знаю
+    4. действующая ипотека — Нет
+    5. обязательство по алиментам — Нет или Не знаю
+    """
+    debt = extract_field(comments, '1__Ваш_долг_более_500_000_рублей')
+    court = extract_field(comments, '2__Кредиторы_подавали_на_Вас_в_суд')
+    exec_proc = extract_field(comments, '3__В_отношении_вас_велось_исполнительное_производство')
+    mortgage = extract_field(comments, '4__Имеется_ли_у_вас_действующая_ипотека')
+    alimony = extract_field(comments, '5__Имеется_ли_обязательство_по_выплате_алиментов')
+
+    print(f"   📝 Тип: quiz_questions")
+    print(f"      Долг > 500к: {debt}")
+    print(f"      Суд: {court}")
+    print(f"      Исп. производство: {exec_proc}")
+    print(f"      Ипотека: {mortgage}")
+    print(f"      Алименты: {alimony}")
+
+    reasons = []
+
+    # 1. Долг должен быть >= 500 000
+    debt_ok = debt and 'да' in debt.lower()
+    if not debt_ok:
+        reasons.append(f"Долг < 500к ({debt})")
+
+    # 2. Суд — Нет или Не знаю
+    court_ok = court and court.lower() in ('нет', 'не знаю')
+    if not court_ok:
+        reasons.append(f"Суд: {court}")
+
+    # 3. Исполнительное производство — Нет или Не знаю
+    exec_ok = exec_proc and exec_proc.lower() in ('нет', 'не знаю')
+    if not exec_ok:
+        reasons.append(f"Исп.произв: {exec_proc}")
+
+    # 4. Ипотека — Нет
+    mortgage_ok = mortgage and mortgage.lower() == 'нет'
+    if not mortgage_ok:
+        reasons.append(f"Ипотека: {mortgage}")
+
+    # 5. Алименты — Нет или Не знаю
+    alimony_ok = alimony and alimony.lower() in ('нет', 'не знаю')
+    if not alimony_ok:
+        reasons.append(f"Алименты: {alimony}")
+
+    qualified = debt_ok and court_ok and exec_ok and mortgage_ok and alimony_ok
+
+    return {
+        'qualified': qualified,
+        'reason': '; '.join(reasons) if reasons else 'Все условия выполнены',
+        'city': None,
+        'debt_amount': debt
+    }
+
+
+def check_debt_quiz(comments: str) -> dict:
+    """
+    Проверяем формат debt-quiz (region, delay_status...).
+
+    Квалификация:
+    1. region — Челябинская область или Свердловская область
+    2. delay_status — Менее 3 месяцев или Нет просрочек, но платить тяжело
+    """
+    region = extract_field(comments, 'region')
+    delay_status = extract_field(comments, 'delay_status')
+    city = extract_field(comments, 'city')
+    debt_amount = extract_field(comments, 'debt_amount')
+
+    print(f"   📝 Тип: debt_quiz")
+    print(f"      Регион: {region}")
+    print(f"      Просрочка: {delay_status}")
+    print(f"      Город: {city}")
+    print(f"      Сумма долга: {debt_amount}")
+
+    reasons = []
+
+    # 1. Регион
+    allowed_regions = ['челябинская область', 'свердловская область']
+    region_ok = region and region.lower() in allowed_regions
+    if not region_ok:
+        reasons.append(f"Регион: {region}")
+
+    # 2. Просрочка
+    allowed_delays = ['менее 3 месяцев', 'нет просрочек, но платить тяжело']
+    delay_ok = delay_status and delay_status.lower() in allowed_delays
+    if not delay_ok:
+        reasons.append(f"Просрочка: {delay_status}")
+
+    qualified = region_ok and delay_ok
+
+    return {
+        'qualified': qualified,
+        'reason': '; '.join(reasons) if reasons else 'Все условия выполнены',
+        'city': city,
+        'debt_amount': debt_amount
+    }
+
+
+def analyze_comments(comments: str) -> dict:
+    """
+    Главная функция анализа комментариев.
+    Определяет тип и проверяет условия квалификации.
+    """
+    comment_type = detect_comment_type(comments)
+
+    if comment_type == 'quiz_questions':
+        return check_quiz_questions(comments)
+    elif comment_type == 'debt_quiz':
+        return check_debt_quiz(comments)
+    else:
+        print(f"   ⚠️ Неизвестный формат комментария")
+        return {
+            'qualified': False,
+            'reason': 'Неизвестный формат комментария',
+            'city': None,
+            'debt_amount': None
+        }
 
 
 def mark_lead(lead_id: str, qualified: bool, city: str = None,
@@ -97,7 +207,7 @@ def mark_lead(lead_id: str, qualified: bool, city: str = None,
         FIELD_GPT_QUALIFIED: True if qualified else False,
         FIELD_METRIKA_SENT: True if metrika_sent else False,
         FIELD_GPT_CITY: city or '',
-        FIELD_GPT_DEBT: debt or 0,
+        FIELD_GPT_DEBT: str(debt) if debt else '',
         FIELD_GPT_RESULT: result_text or ''
     }
     result = update_lead(lead_id, fields)
@@ -105,16 +215,6 @@ def mark_lead(lead_id: str, qualified: bool, city: str = None,
         print(f"   💾 Лид {lead_id} обновлён в Б24")
     else:
         print(f"   ❌ Ошибка обновления лида {lead_id}")
-
-
-def save_transcripts(lead_id: str, transcripts: dict):
-    """Сохраняем все транскрипты в поле Б24"""
-    text = build_transcript_field(transcripts)
-    b24_request("crm.lead.update", {
-        "id": lead_id,
-        "fields": {FIELD_TRANSCRIPT: text}
-    })
-    print(f"   💾 Транскрипты сохранены: {len(transcripts)} звонков, {len(text)} симв")
 
 
 def process_lead(lead: dict) -> str:
@@ -159,74 +259,23 @@ def process_lead(lead: dict) -> str:
                   metrika_sent=sent)
         return 'sent' if sent else 'metrika_error'
 
-    # 4. Загружаем уже сохранённые транскрипты из Б24
-    transcript_field = lead.get(FIELD_TRANSCRIPT, '') or ''
-    saved_transcripts = parse_transcript_field(transcript_field)
+    # 4. Анализируем комментарий
+    comment_type = detect_comment_type(comments)
+    if not comment_type:
+        print(f"   ⏭️ Комментарий не содержит данных для анализа")
+        mark_lead(lead_id, qualified=False,
+                  result_text="Пропущен: неизвестный формат комментария")
+        return 'no_calls'  # используем тот же статус для "нечего анализировать"
 
-    print(f"   📄 Сохранённых транскриптов: {len(saved_transcripts)} звонков")
-    for call_id in saved_transcripts:
-        print(f"      - call:{call_id} ({len(saved_transcripts[call_id])} симв)")
+    print(f"   🔍 Анализируем комментарий (тип: {comment_type})...")
+    analysis = analyze_comments(comments)
 
-    # 5. Получаем звонки лида
-    print(f"   🔍 Проверяем звонки...")
-    calls = get_calls_for_lead(lead_id)
-
-    if not calls and not saved_transcripts:
-        print("   ❌ Нет звонков и нет сохранённых транскриптов")
-        return 'no_calls'
-
-    # 6. Транскрибируем новые звонки
-    new_transcribed = False
-
-    for call in calls:
-        call_id = str(call.get('ID'))
-        record_url = call.get('CALL_RECORD_URL')
-        duration = call.get('CALL_DURATION')
-
-        # Уже транскрибировали этот звонок?
-        if call_id in saved_transcripts:
-            print(f"   ⏭️ Звонок {call_id} уже транскрибирован — пропускаем")
-            continue
-
-        print(f"\n   📞 Новый звонок ID={call_id}, {duration}с — транскрибируем...")
-
-        transcript = process_call_audio(record_url, call_id)
-        if not transcript:
-            print(f"   ⚠️ Не удалось транскрибировать звонок {call_id}")
-            continue
-
-        full_text = transcript.get('full_text', '')
-        if full_text:
-            saved_transcripts[call_id] = full_text
-            new_transcribed = True
-            print(f"   ✅ Звонок {call_id} транскрибирован: {len(full_text)} симв")
-
-    # 7. Сохраняем обновлённые транскрипты в Б24
-    if new_transcribed:
-        save_transcripts(lead_id, saved_transcripts)
-
-    # 8. Если нет ни одного транскрипта
-    if not saved_transcripts:
-        print("   ❌ Нет транскриптов для анализа")
-        return 'no_calls'
-
-    # 9. Собираем весь текст для анализа
-    all_text = "\n\n".join([
-        f"[Звонок {call_id}]\n{text}"
-        for call_id, text in saved_transcripts.items()
-    ])
-
-    print(f"\n   🤖 Отправляем в Groq ({len(all_text)} симв)...")
-    print(f"   Текст: {all_text[:300]}")
-
-    # 10. Анализируем через Groq
-    analysis = analyze_transcript(all_text)
-
-    if analysis.get('qualified'):
+    if analysis['qualified']:
         city = analysis.get('city')
         debt = analysis.get('debt_amount')
 
         print(f"   ✅ КВАЛИФИЦИРОВАН! Город={city}, Долг={debt}")
+        print(f"   Причина: {analysis['reason']}")
 
         sent = send_conversion(
             counter_id=metrika_cfg['counter_id'],
@@ -237,13 +286,13 @@ def process_lead(lead: dict) -> str:
         mark_lead(
             lead_id, qualified=True,
             city=city, debt=debt,
-            result_text=f"{city} | {debt} | {all_text[:300]}",
+            result_text=f"Квалиф. по комментарию ({comment_type}): {analysis['reason']}",
             metrika_sent=sent
         )
         return 'sent' if sent else 'metrika_error'
 
-    # 11. Не квалифицирован
-    print(f"   ❌ Не квалифицирован")
+    # Не квалифицирован
+    print(f"   ❌ Не квалифицирован: {analysis['reason']}")
     mark_lead(lead_id, qualified=False,
-              result_text="Не квалифицирован после анализа звонков")
+              result_text=f"Не квалиф: {analysis['reason']}")
     return 'not_qualified'
