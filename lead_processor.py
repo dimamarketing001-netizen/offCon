@@ -247,7 +247,7 @@ def process_lead(lead: dict) -> str:
             return 'no_ymuid'
 
         sent = send_conversion(
-            counter_id="103733376",
+            counter_id="103733006",
             token="y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
             client_id=ym_uid,
             phone=phone,

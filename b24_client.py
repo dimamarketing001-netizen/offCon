@@ -55,6 +55,7 @@ def get_unprocessed_leads() -> list:
                 "ID",
                 "TITLE",
                 "STATUS_ID",
+                "SOURCE_ID",
                 "COMMENTS",
                 "PHONE",
                 "EMAIL",
