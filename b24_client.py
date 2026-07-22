@@ -66,7 +66,8 @@ def get_unprocessed_leads() -> list:
                 "UTM_TERM",
                 "UF_CRM_1781719858208",
                 "UF_CRM_1781720075678",
-                "UF_CRM_1781864619456"
+                "UF_CRM_1781864619456",
+                "UF_CRM_COOKIES"
             ],
             "order": {"DATE_CREATE": "DESC"},
             "start": start

@@ -13,8 +13,14 @@ from config import (
 )
 
 
-def parse_ym_uid(comments: str) -> Optional[str]:
-    match = re.search(r'_ym_uid=(\d+)', comments or '')
+def parse_ym_uid(lead: dict) -> Optional[str]:
+    """
+    Достаём _ym_uid из поля UF_CRM_COOKIES.
+    Ожидаем строку вида:
+    "...; _ym_uid=1234567890; ..."
+    """
+    cookies = lead.get('UF_CRM_COOKIES') or ''
+    match = re.search(r'_ym_uid=(\d+)', cookies)
     return match.group(1) if match else None
 
 
@@ -224,7 +230,7 @@ def process_lead(lead: dict) -> str:
 
     # ✅ СПЕЦУСЛОВИЕ: SOURCE_ID = 7 → отправляем сразу в отдельный счётчик
     source_id = str(lead.get('SOURCE_ID') or '').strip()
-    ym_uid = parse_ym_uid(comments)
+    ym_uid = parse_ym_uid(lead)
     phone = get_phone(lead)
 
     if source_id == '7':
@@ -269,7 +275,7 @@ def process_lead(lead: dict) -> str:
         return 'no_utm'
 
     # 2. Проверяем _ym_uid
-    ym_uid = parse_ym_uid(comments)
+    ym_uid = parse_ym_uid(lead)
     phone = get_phone(lead)
 
     print(f"   _ym_uid: {ym_uid or '❌'} | Телефон: {phone or '❌'}")
