@@ -4,37 +4,32 @@ import time
 import requests
 from config import METRIKA_GOAL
 
-
 def send_conversion(
         counter_id: str,
         token: str,
         client_id: str = None,
-        phone: str = None
+        phone: str = None,
+        goal_name: str = None
 ) -> bool:
     if not client_id and not phone:
         print("   ❌ Нет идентификаторов для Метрики")
         return False
 
-    # Формируем CSV
+    goal = goal_name or METRIKA_GOAL
     timestamp = int(time.time())
 
-    rows = []
-
     if client_id:
-        # ClientID конверсия
-        csv_content = f"ClientId,Target,DateTime\n{client_id},{METRIKA_GOAL},{timestamp}"
-        client_id_type = "CLIENT_ID"
+        csv_content = f"ClientId,Target,DateTime\n{client_id},{goal},{timestamp}"
     elif phone:
         phone_clean = ''.join(filter(str.isdigit, str(phone)))
         if phone_clean.startswith('8') and len(phone_clean) == 11:
             phone_clean = '7' + phone_clean[1:]
-        csv_content = f"Phone,Target,DateTime\n+{phone_clean},{METRIKA_GOAL},{timestamp}"
-        client_id_type = "CLIENT_ID"
+        csv_content = f"Phone,Target,DateTime\n+{phone_clean},{goal},{timestamp}"
 
     print(f"   📤 Отправляем в Метрику:")
     print(f"      counter_id:     {counter_id}")
     print(f"      ClientID:       {client_id}")
-    print(f"      Target:         {METRIKA_GOAL}")
+    print(f"      Target:         {goal}")
     print(f"      CSV:\n{csv_content}")
 
     url = (f"https://api-metrika.yandex.net/management/v1/"

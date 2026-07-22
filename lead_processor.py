@@ -222,6 +222,41 @@ def process_lead(lead: dict) -> str:
     status_id = lead.get('STATUS_ID')
     comments = lead.get('COMMENTS', '')
 
+    # ✅ СПЕЦУСЛОВИЕ: SOURCE_ID = 7 → отправляем сразу в отдельный счётчик
+    source_id = str(lead.get('SOURCE_ID') or '').strip()
+    ym_uid = parse_ym_uid(comments)
+    phone = get_phone(lead)
+
+    if source_id == '7':
+        print(f"   🚀 SOURCE_ID=7 → отправляем как case_lead (отдельный счётчик)")
+        print(f"   _ym_uid: {ym_uid or '❌'} | Телефон: {phone or '❌'}")
+
+        if not ym_uid:
+            print(f"   ⏭️ Нет _ym_uid — пропускаем")
+            mark_lead(
+                lead_id,
+                qualified=False,
+                result_text="SOURCE_ID=7, но нет _ym_uid"
+            )
+            return 'no_ymuid'
+
+        sent = send_conversion(
+            counter_id="103733376",
+            token="y0__wgBEJKIlYkIGND1QyDY8u39F4F5gozY3hR9fDx2dqodPhjfbKkN",
+            client_id=ym_uid,
+            phone=phone,
+            goal_name="case_lead"
+        )
+
+        mark_lead(
+            lead_id,
+            qualified=True,
+            result_text="Отправлен как case_lead (SOURCE_ID=7)",
+            metrika_sent=sent
+        )
+
+        return 'sent' if sent else 'metrika_error'
+
     print(f"\n{'=' * 55}")
     print(f"📋 Лид ID={lead_id} | Статус={status_id}")
     print(f"   UTM_CAMPAIGN: {lead.get('UTM_CAMPAIGN') or '❌ нет'}")

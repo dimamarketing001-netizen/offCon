@@ -8,3 +8,4 @@ __pycache__/
 *.ogg
 /tmp/
 config.py
+config.php
