@@ -12,16 +12,28 @@ from config import (
     FIELD_GPT_RESULT,
 )
 
+FIELD_LEAD_SENT = "UF_CRM_1784810882912"
 
 def parse_ym_uid(lead: dict) -> Optional[str]:
     """
-    Достаём _ym_uid из поля UF_CRM_COOKIES.
-    Ожидаем строку вида:
-    "...; _ym_uid=1234567890; ..."
+    Ищем _ym_uid:
+    1. Сначала в COMMENTS
+    2. Если нет — в UF_CRM_COOKIES
     """
+
+    # 1️⃣ Ищем в комментариях
+    comments = lead.get("COMMENTS") or ""
+    match = re.search(r'_ym_uid=(\d+)', comments)
+    if match:
+        return match.group(1)
+
+    # 2️⃣ Ищем в поле куки
     cookies = lead.get('UF_CRM_COOKIES') or ''
     match = re.search(r'_ym_uid=(\d+)', cookies)
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+
+    return None
 
 
 def get_phone(lead: dict) -> Optional[str]:
@@ -184,6 +196,103 @@ def check_debt_quiz(comments: str) -> dict:
         'debt_amount': debt_amount
     }
 
+def extract_quiz_answers(comments: str) -> Dict[str, str]:
+    answers = {}
+    if not comments:
+        return answers
+
+    pattern = re.compile(r'^\s*([1-7])__[^:]+:\s*(.+)$', re.MULTILINE)
+
+    mapping = {
+        "1": "debt",
+        "2": "court",
+        "3": "exec",
+        "4": "mortgage",
+        "5": "alimony",
+        "6": "income",
+        "7": "property"
+    }
+
+    for q_num, value in pattern.findall(comments):
+        key = mapping.get(q_num)
+        if key:
+            answers[key] = value.strip()
+
+    return answers
+
+
+def calculate_score(data: Dict[str, str]) -> int:
+    def norm(v):
+        return (v or "").strip().lower()
+
+    debt = norm(data.get("debt"))
+    court = norm(data.get("court"))
+    exec_proc = norm(data.get("exec"))
+    mortgage = norm(data.get("mortgage"))
+    alimony = norm(data.get("alimony"))
+    income = norm(data.get("income"))
+    property_ = norm(data.get("property"))
+
+    # 🔴 STOP
+    if exec_proc == "да":
+        print("   🔴 STOP-ФАКТОР")
+        return 50
+
+    score = 0
+
+    if "более 500" in debt:
+        score += 200
+    elif "менее 500" in debt:
+        score += 120
+
+    if court == "нет":
+        score += 150
+    elif court == "не знаю":
+        score += 120
+    elif court == "да":
+        score += 60
+
+    if exec_proc == "нет":
+        score += 200
+    elif exec_proc == "не знаю":
+        score += 150
+
+    if mortgage == "нет":
+        score += 100
+    elif mortgage == "да":
+        score += 40
+
+    if alimony == "нет":
+        score += 50
+    elif alimony == "не знаю":
+        score += 20
+
+    if income == "да":
+        score += 200
+    elif income == "нет":
+        score += 80
+
+    if property_ == "нет":
+        score += 100
+    elif property_ == "да":
+        score += 60
+
+    score = max(0, min(score, 1000))
+
+    print(f"   📊 SCORE={score}")
+    return score
+
+
+def get_segment(score: int) -> str:
+    if score >= 900:
+        return "Премиум"
+    elif score >= 800:
+        return "Сильный"
+    elif score >= 600:
+        return "Средний"
+    elif score >= 100:
+        return "Слабый"
+    return "Красная зона"
 
 def analyze_comments(comments: str) -> dict:
     """
@@ -226,7 +335,41 @@ def mark_lead(lead_id: str, qualified: bool, city: str = None,
 def process_lead(lead: dict) -> str:
     lead_id = lead.get('ID')
     status_id = lead.get('STATUS_ID')
-    comments = lead.get('COMMENTS', '')
+
+    comments = lead.get("COMMENTS", "")
+    answers = extract_quiz_answers(comments)
+
+    lead_sent_flag = str(lead.get(FIELD_LEAD_SENT)).lower() in ("1", "true", "y")
+
+    if answers and not lead_sent_flag:
+        metrika_cfg = get_metrika_config(lead)
+        if not metrika_cfg:
+            print("   ⏭️ Нет маппинга для UTM — lead не отправляем")
+        else:
+            ym_uid = parse_ym_uid(lead)
+            phone = get_phone(lead)
+
+            if ym_uid or phone:
+
+                score = calculate_score(answers)
+                segment = get_segment(score)
+
+                print(f"   🏷 Сегмент: {segment}")
+
+                sent = send_conversion(
+                    counter_id=metrika_cfg["counter_id"],
+                    token=metrika_cfg["token"],
+                    client_id=ym_uid,
+                    phone=phone,
+                    goal_name="lead",
+                    revenue=score
+                )
+
+                if sent:
+                    update_lead(lead_id, {
+                        FIELD_LEAD_SENT: True,
+                        "UF_CRM_1784809635845": segment
+                    })
 
     # ✅ СПЕЦУСЛОВИЕ: SOURCE_ID = 7 → отправляем сразу в отдельный счётчик
     source_id = str(lead.get('SOURCE_ID') or '').strip()

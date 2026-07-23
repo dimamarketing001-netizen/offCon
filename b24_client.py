@@ -56,6 +56,9 @@ def get_unprocessed_leads() -> list:
                 "TITLE",
                 "STATUS_ID",
                 "SOURCE_ID",
+                "UF_CRM_1784810882912",
+                "UF_CRM_1784809635845",
+                "UF_CRM_COOKIES",
                 "COMMENTS",
                 "PHONE",
                 "EMAIL",
@@ -68,7 +71,6 @@ def get_unprocessed_leads() -> list:
                 "UF_CRM_1781719858208",
                 "UF_CRM_1781720075678",
                 "UF_CRM_1781864619456",
-                "UF_CRM_COOKIES"
             ],
             "order": {"DATE_CREATE": "DESC"},
             "start": start
