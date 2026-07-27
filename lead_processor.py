@@ -439,14 +439,29 @@ def calculate_score(data: Dict[str, str]) -> int:
 
 
 def get_segment(score: int) -> str:
-    if score >= 900:
-        return "Премиум"
-    elif score >= 800:
-        return "Сильный"
-    elif score >= 600:
-        return "Средний"
-    elif score >= 100:
-        return "Слабый"
+    """
+    Сегментация LTV-лида.
+    Учитывает динамические начисления.
+    """
+
+    if score == 0:
+        return "Стоп-лид"
+
+    if score >= 10000:
+        return "LTV MAX"
+
+    if score >= 3000:
+        return "Контракт"
+
+    if score >= 1000:
+        return "Прогретый"
+
+    if score >= 600:
+        return "Квалифицирован"
+
+    if score >= 100:
+        return "Холодный"
+
     return "Красная зона"
 
 def analyze_comments(comments: str) -> dict:
