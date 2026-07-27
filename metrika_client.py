@@ -23,8 +23,8 @@ def send_conversion(
     if client_id:
         if revenue is not None:
             csv_content = (
-                f"ClientId,Target,DateTime,Revenue\n"
-                f"{client_id},{goal},{timestamp},{revenue}"
+                f"ClientId,Target,DateTime,Price,Currency\n"
+                f"{client_id},{goal},{timestamp},{revenue},RUB"
             )
         else:
             csv_content = (
@@ -38,8 +38,8 @@ def send_conversion(
 
         if revenue is not None:
             csv_content = (
-                f"Phone,Target,DateTime,Revenue\n"
-                f"+{phone_clean},{goal},{timestamp},{revenue}"
+                f"Phone,Target,DateTime,Price,Currency\n"
+                f"+{phone_clean},{goal},{timestamp},{revenue},RUB"
             )
         else:
             csv_content = (
