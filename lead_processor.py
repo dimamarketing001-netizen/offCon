@@ -13,6 +13,165 @@ from config import (
 )
 
 FIELD_LEAD_SENT = "UF_CRM_1784810882912"
+FIELD_SCORE = "UF_CRM_1785127355773"
+FIELD_SEGMENT = "UF_CRM_1784809635845"
+
+FIELD_REGION_BOOST = "UF_CRM_1785129692124"
+FIELD_MEETING = "UF_CRM_1785130223297"
+FIELD_VISIT = "UF_CRM_1785129752702"
+FIELD_CONTRACT = "UF_CRM_1785129817186"
+FIELD_PAYMENT = "UF_CRM_1785129856486"
+
+FIELD_LOG = "UF_CRM_1785133075725"
+
+FIELD_CITY = "UF_CRM_1730379820755"
+
+def check_stop_factors(answers: dict, lead: dict) -> bool:
+    """
+    Если любой стоп-фактор срабатывает —
+    отправляем 0 и больше никогда не пересчитываем
+    """
+
+    # 1️⃣ ФССП
+    if answers.get("exec", "").strip().lower() == "да":
+        print("🔴 STOP: ФССП")
+        return True
+
+    # 2️⃣ Ипотека
+    if answers.get("mortgage", "").strip().lower() == "да":
+        print("🔴 STOP: Ипотека")
+        return True
+
+    # 3️⃣ Регион
+    city = (lead.get(FIELD_CITY) or "").strip().lower()
+
+    if city:
+        if city not in ("челябинск", "екатеринбург"):
+            print("🔴 STOP: Регион не ЦА")
+            return True
+    else:
+        # ищем utm_region_id
+        comments = lead.get("COMMENTS") or ""
+        match = re.search(r'utm_region_id%3D(\d+)', comments)
+        if match:
+            region_id = match.group(1)
+            if region_id not in ("54", "56"):
+                print("🔴 STOP: utm_region_id не ЦА")
+                return True
+
+    return False
+
+def check_region_boost(lead: dict) -> bool:
+    city = (lead.get(FIELD_CITY) or "").strip().lower()
+
+    if city in ("челябинск", "екатеринбург"):
+        return True
+
+    comments = lead.get("COMMENTS") or ""
+    match = re.search(r'utm_region_id%3D(\d+)', comments)
+    if match and match.group(1) in ("54", "56"):
+        return True
+
+    return False
+
+def has_won_deal(lead_id: str) -> bool:
+    deals = b24_request("crm.deal.list", {
+        "filter": {
+            "LEAD_ID": lead_id,
+            "TYPE_ID": "SALE",
+            "CATEGORY_ID": 0,
+            "STAGE_ID": "WON"
+        },
+        "select": ["ID"]
+    }).get("result", [])
+
+    return bool(deals)
+
+def update_score_and_send(lead: dict, add_value: int, reason: str):
+    lead_id = lead.get("ID")
+    current_score = int(lead.get(FIELD_SCORE) or 0)
+
+    new_score = current_score + add_value
+
+    ym_uid = parse_ym_uid(lead)
+    phone = get_phone(lead)
+    metrika_cfg = get_metrika_config(lead)
+
+    if not metrika_cfg or not (ym_uid or phone):
+        return
+
+    print(f"📈 {reason}: +{add_value} → {new_score}")
+
+    send_conversion(
+        counter_id=metrika_cfg["counter_id"],
+        token=metrika_cfg["token"],
+        client_id=ym_uid,
+        phone=phone,
+        goal_name="lead",
+        revenue=new_score
+    )
+
+    log_text = f"{reason} +{add_value} → {new_score}"
+
+    update_lead(lead_id, {
+        FIELD_SCORE: new_score,
+        FIELD_LOG: log_text
+    })
+
+def process_dynamic_events(lead: dict):
+    lead_id = lead.get("ID")
+    status_id = lead.get("STATUS_ID")
+
+    # 1️⃣ Регион
+    if not lead.get(FIELD_REGION_BOOST):
+        if check_region_boost(lead):
+            update_score_and_send(lead, 500, "Регион")
+            update_lead(lead_id, {FIELD_REGION_BOOST: True})
+
+    # 2️⃣ Оплата (самый приоритет)
+    if not lead.get(FIELD_PAYMENT):
+        if has_won_deal(lead_id):
+            update_score_and_send(lead, 10000, "Оплата")
+
+            update_lead(lead_id, {
+                FIELD_PAYMENT: True,
+                FIELD_CONTRACT: True,
+                FIELD_VISIT: True,
+                FIELD_MEETING: True,
+                FIELD_REGION_BOOST: True
+            })
+            return
+
+    # 3️⃣ Договор
+    if not lead.get(FIELD_CONTRACT):
+        if status_id == "CONVERTED":
+            update_score_and_send(lead, 3000, "Договор")
+
+            update_lead(lead_id, {
+                FIELD_CONTRACT: True,
+                FIELD_VISIT: True,
+                FIELD_MEETING: True
+            })
+            return
+
+    # 4️⃣ Визит
+    if not lead.get(FIELD_VISIT):
+        if status_id in ("UC_DK6IWL", "UC_YL1CVZ"):
+            update_score_and_send(lead, 500, "Визит")
+
+            update_lead(lead_id, {
+                FIELD_VISIT: True,
+                FIELD_MEETING: True
+            })
+            return
+
+    # 5️⃣ Назначена встреча
+    if not lead.get(FIELD_MEETING):
+        if status_id == "UC_TG2I2A":
+            update_score_and_send(lead, 300, "Назначена встреча")
+            update_lead(lead_id, {
+                FIELD_MEETING: True
+            })
 
 def parse_ym_uid(lead: dict) -> Optional[str]:
     """
@@ -233,14 +392,10 @@ def calculate_score(data: Dict[str, str]) -> int:
     income = norm(data.get("income"))
     property_ = norm(data.get("property"))
 
-    # 🔴 STOP
-    if exec_proc == "да":
-        print("   🔴 STOP-ФАКТОР")
-        return 50
-
     score = 0
 
     if "более 500" in debt:
+
         score += 200
     elif "менее 500" in debt:
         score += 120
@@ -331,63 +486,103 @@ def mark_lead(lead_id: str, qualified: bool, city: str = None,
     else:
         print(f"   ❌ Ошибка обновления лида {lead_id}")
 
-
 def process_lead(lead: dict) -> str:
-    lead_id = lead.get('ID')
-    status_id = lead.get('STATUS_ID')
+    lead_id = lead.get("ID")
+    status_id = lead.get("STATUS_ID")
+
+    print(f"\n{'=' * 60}")
+    print(f"📋 Лид ID={lead_id} | Статус={status_id}")
+
+    ym_uid = parse_ym_uid(lead)
+    phone = get_phone(lead)
+
+    # ------------------------------------------------------------
+    # ✅ 1. БАЗОВЫЙ СКОРИНГ (если ещё не отправляли)
+    # ------------------------------------------------------------
+
+    lead_sent_flag = str(lead.get(FIELD_LEAD_SENT)).lower() in ("1", "true", "y")
 
     comments = lead.get("COMMENTS", "")
     answers = extract_quiz_answers(comments)
 
-    lead_sent_flag = str(lead.get(FIELD_LEAD_SENT)).lower() in ("1", "true", "y")
-
     if answers and not lead_sent_flag:
+
         metrika_cfg = get_metrika_config(lead)
         if not metrika_cfg:
-            print("   ⏭️ Нет маппинга для UTM — lead не отправляем")
-        else:
-            ym_uid = parse_ym_uid(lead)
-            phone = get_phone(lead)
+            print("⏭ Нет маппинга UTM — пропуск")
+            return "no_utm"
 
+        # ✅ STOP-факторы
+        if check_stop_factors(answers, lead):
             if ym_uid or phone:
-
-                score = calculate_score(answers)
-                segment = get_segment(score)
-
-                print(f"   🏷 Сегмент: {segment}")
-
-                sent = send_conversion(
+                send_conversion(
                     counter_id=metrika_cfg["counter_id"],
                     token=metrika_cfg["token"],
                     client_id=ym_uid,
                     phone=phone,
                     goal_name="lead",
-                    revenue=score
+                    revenue=0
                 )
 
-                if sent:
-                    update_lead(lead_id, {
-                        FIELD_LEAD_SENT: True,
-                        "UF_CRM_1784809635845": segment
-                    })
+            update_lead(lead_id, {
+                FIELD_LEAD_SENT: True,
+                FIELD_SCORE: 0,
+                FIELD_LOG: "STOP-фактор"
+            })
 
-    # ✅ СПЕЦУСЛОВИЕ: SOURCE_ID = 7 → отправляем сразу в отдельный счётчик
-    source_id = str(lead.get('SOURCE_ID') or '').strip()
-    ym_uid = parse_ym_uid(lead)
-    phone = get_phone(lead)
+            print("🔴 STOP отправлен как 0. Больше не пересчитывается.")
+            return "sent"
 
-    if source_id == '7':
-        print(f"   🚀 SOURCE_ID=7 → отправляем как case_lead (отдельный счётчик)")
-        print(f"   _ym_uid: {ym_uid or '❌'} | Телефон: {phone or '❌'}")
+        # ✅ Базовый скоринг 0–1000
+        base_score = calculate_score(answers)
+
+        if ym_uid or phone:
+            send_conversion(
+                counter_id=metrika_cfg["counter_id"],
+                token=metrika_cfg["token"],
+                client_id=ym_uid,
+                phone=phone,
+                goal_name="lead",
+                revenue=base_score
+            )
+
+        segment = get_segment(base_score)
+
+        update_lead(lead_id, {
+            FIELD_LEAD_SENT: True,
+            FIELD_SCORE: base_score,
+            FIELD_SEGMENT: segment,
+            FIELD_LOG: f"Базовый скоринг {base_score}"
+        })
+
+        print(f"✅ Базовый скоринг отправлен: {base_score}")
+
+    # ------------------------------------------------------------
+    # ✅ 2. ДИНАМИЧЕСКИЕ СОБЫТИЯ (каждый запуск)
+    # ------------------------------------------------------------
+
+    lead_sent_flag = str(lead.get(FIELD_LEAD_SENT)).lower() in ("1", "true", "y")
+
+    if lead_sent_flag:
+
+        # если score = 0 (стоп) — больше не трогаем
+        if int(lead.get(FIELD_SCORE) or 0) == 0:
+            print("⛔ STOP-лид. Дальнейшая проверка отключена.")
+            return "sent"
+
+        process_dynamic_events(lead)
+
+    # ------------------------------------------------------------
+    # ✅ 3. SOURCE_ID = 7 (case_lead)
+    # ------------------------------------------------------------
+
+    source_id = str(lead.get("SOURCE_ID") or "").strip()
+
+    if source_id == "7":
 
         if not ym_uid:
-            print(f"   ⏭️ Нет _ym_uid — пропускаем")
-            mark_lead(
-                lead_id,
-                qualified=False,
-                result_text="SOURCE_ID=7, но нет _ym_uid"
-            )
-            return 'no_ymuid'
+            print("⏭ SOURCE_ID=7 но нет ym_uid")
+            return "no_ymuid"
 
         sent = send_conversion(
             counter_id="103733006",
@@ -404,79 +599,60 @@ def process_lead(lead: dict) -> str:
             metrika_sent=sent
         )
 
-        return 'sent' if sent else 'metrika_error'
+        return "sent" if sent else "metrika_error"
 
-    print(f"\n{'=' * 55}")
-    print(f"📋 Лид ID={lead_id} | Статус={status_id}")
-    print(f"   UTM_CAMPAIGN: {lead.get('UTM_CAMPAIGN') or '❌ нет'}")
+    # ------------------------------------------------------------
+    # ✅ 4. СТАРАЯ ЛОГИКА КВАЛИФИКАЦИИ (ЭТАП 2)
+    # ------------------------------------------------------------
 
-    # 1. Проверяем UTM_CAMPAIGN
     metrika_cfg = get_metrika_config(lead)
     if not metrika_cfg:
-        mark_lead(lead_id, qualified=False,
-                  result_text="Пропущен: нет UTM_CAMPAIGN в маппинге")
-        return 'no_utm'
-
-    # 2. Проверяем _ym_uid
-    ym_uid = parse_ym_uid(lead)
-    phone = get_phone(lead)
-
-    print(f"   _ym_uid: {ym_uid or '❌'} | Телефон: {phone or '❌'}")
+        return "no_utm"
 
     if not ym_uid:
-        print(f"   ⏭️ Нет _ym_uid — пропускаем")
-        mark_lead(lead_id, qualified=False,
-                  result_text="Пропущен: нет _ym_uid")
-        return 'no_ymuid'
+        return "no_ymuid"
 
-    # 3. Статус уже квалифицирован — сразу в Метрику
     if status_id in QUALIFIED_STATUSES:
-        print(f"   ✅ Статус квалифицирован: {status_id}")
+
         sent = send_conversion(
-            counter_id=metrika_cfg['counter_id'],
-            token=metrika_cfg['token'],
+            counter_id=metrika_cfg["counter_id"],
+            token=metrika_cfg["token"],
             client_id=ym_uid,
             phone=phone
         )
-        mark_lead(lead_id, qualified=True,
-                  result_text=f"Квалифицирован по статусу: {status_id}",
-                  metrika_sent=sent)
-        return 'sent' if sent else 'metrika_error'
 
-    # 4. Анализируем комментарий
-    comment_type = detect_comment_type(comments)
-    if not comment_type:
-        print(f"   ⏭️ Комментарий не содержит данных для анализа")
-        mark_lead(lead_id, qualified=False,
-                  result_text="Пропущен: неизвестный формат комментария")
-        return 'no_calls'  # используем тот же статус для "нечего анализировать"
-
-    print(f"   🔍 Анализируем комментарий (тип: {comment_type})...")
-    analysis = analyze_comments(comments)
-
-    if analysis['qualified']:
-        city = analysis.get('city')
-        debt = analysis.get('debt_amount')
-
-        print(f"   ✅ КВАЛИФИЦИРОВАН! Город={city}, Долг={debt}")
-        print(f"   Причина: {analysis['reason']}")
-
-        sent = send_conversion(
-            counter_id=metrika_cfg['counter_id'],
-            token=metrika_cfg['token'],
-            client_id=ym_uid,
-            phone=phone
-        )
         mark_lead(
-            lead_id, qualified=True,
-            city=city, debt=debt,
-            result_text=f"Квалиф. по комментарию ({comment_type}): {analysis['reason']}",
+            lead_id,
+            qualified=True,
+            result_text=f"Квалифицирован по статусу: {status_id}",
             metrika_sent=sent
         )
-        return 'sent' if sent else 'metrika_error'
 
-    # Не квалифицирован
-    print(f"   ❌ Не квалифицирован: {analysis['reason']}")
-    mark_lead(lead_id, qualified=False,
-              result_text=f"Не квалиф: {analysis['reason']}")
-    return 'not_qualified'
+        return "sent" if sent else "metrika_error"
+
+    comment_type = detect_comment_type(comments)
+
+    if comment_type:
+        analysis = analyze_comments(comments)
+
+        if analysis["qualified"]:
+
+            sent = send_conversion(
+                counter_id=metrika_cfg["counter_id"],
+                token=metrika_cfg["token"],
+                client_id=ym_uid,
+                phone=phone
+            )
+
+            mark_lead(
+                lead_id,
+                qualified=True,
+                city=analysis.get("city"),
+                debt=analysis.get("debt_amount"),
+                result_text=f"Квалиф. по комментарию",
+                metrika_sent=sent
+            )
+
+            return "sent" if sent else "metrika_error"
+
+    return "not_qualified"
