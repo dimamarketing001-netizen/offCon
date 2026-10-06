@@ -997,3 +997,136 @@ def send_legacy_qualified_conversion(lead: dict, reason: str) -> str:
 
 def process_initial_lead(lead: dict) -> str:
     lead_id = lead.get("ID")
+    status_id = str(lead.get("STATUS_ID") or "")
+
+    print(f"\n{'=' * 60}")
+    print(f"📋 Лид ID={lead_id} | Статус={status_id}")
+
+    comments = get_comment_text(lead)
+    ym_uid, yclid = get_metrika_ids(lead)
+    phone = get_phone(lead)
+
+    lead_sent_flag = is_true(lead.get(FIELD_LEAD_SENT))
+    metrika_sent_flag = is_true(lead.get(FIELD_METRIKA_SENT))
+
+    result = "not_qualified"
+
+    if not lead_sent_flag:
+        payload = extract_base_scoring_payload(lead)
+        answers = payload.get("answers") or {}
+        parsed_city = payload.get("city")
+
+        if answers:
+            metrika_cfg = get_metrika_config(lead)
+            if not metrika_cfg:
+                return "no_utm"
+
+            if check_stop_factors(answers, lead, parsed_city):
+                if ym_uid or yclid or phone:
+                    send_conversion(
+                        counter_id=metrika_cfg["counter_id"],
+                        token=metrika_cfg["token"],
+                        client_id=ym_uid,
+                        yclid=yclid,
+                        phone=phone,
+                        goal_name="lead",
+                        revenue=0
+                    )
+
+                update_lead(lead_id, {
+                    FIELD_LEAD_SENT: True,
+                    FIELD_SCORE: 0,
+                    FIELD_SEGMENT: get_segment(0),
+                    FIELD_LOG: "STOP-фактор"
+                })
+
+                print("🔴 STOP отправлен как 0. Больше не пересчитывается.")
+                return "sent"
+
+            base_score = calculate_score(answers)
+
+            if ym_uid or yclid or phone:
+                send_conversion(
+                    counter_id=metrika_cfg["counter_id"],
+                    token=metrika_cfg["token"],
+                    client_id=ym_uid,
+                    yclid=yclid,
+                    phone=phone,
+                    goal_name="lead",
+                    revenue=base_score
+                )
+
+            segment = get_segment(base_score)
+
+            update_lead(lead_id, {
+                FIELD_LEAD_SENT: True,
+                FIELD_SCORE: base_score,
+                FIELD_SEGMENT: segment,
+                FIELD_LOG: f"Базовый скоринг {base_score}"
+            })
+
+            print(f"✅ Базовый скоринг отправлен: {base_score}")
+
+            lead_sent_flag = True
+            lead[FIELD_LEAD_SENT] = True
+            lead[FIELD_SCORE] = base_score
+            lead[FIELD_SEGMENT] = segment
+            result = "sent"
+
+    if metrika_sent_flag:
+        return result
+
+    if lead_sent_flag and int(lead.get(FIELD_SCORE) or 0) == 0:
+        print("⛔ STOP-лид. Старая квалификация отключена.")
+        return result
+
+    if status_id in QUALIFIED_STATUSES:
+        return send_legacy_qualified_conversion(
+            lead,
+            f"Квалифицирован по статусу: {status_id}"
+        )
+
+    comment_type = detect_comment_type(comments)
+
+    if comment_type in ("quiz_questions", "quiz_text_legacy", "debt_quiz"):
+        analysis = analyze_comments(comments)
+
+        if analysis["qualified"]:
+            return send_legacy_qualified_conversion(
+                lead,
+                "Квалифицирован по комментарию"
+            )
+
+    return result
+
+
+def process_dynamic_lead(lead: dict) -> str:
+    lead_id = lead.get("ID")
+    status_id = str(lead.get("STATUS_ID") or "")
+
+    print(f"\n{'=' * 60}")
+    print(f"📈 Динамика лида ID={lead_id} | Статус={status_id}")
+
+    if not is_true(lead.get(FIELD_LEAD_SENT)):
+        print("⏭️ Базовый скоринг ещё не отправлялся")
+        return "skip"
+
+    if int(lead.get(FIELD_SCORE) or 0) == 0:
+        print("⛔ STOP-лид. Дальнейшая проверка отключена.")
+        return "skip"
+
+    # === НАЧАЛО ИЗМЕНЕНИЙ: Проверка исключения для повторного скоринга ===
+    utm_campaign_raw = (lead.get("UTM_CAMPAIGN") or "").strip()
+    if utm_campaign_raw:
+        utm_campaign_key = extract_utm_campaign_key(utm_campaign_raw)
+        if utm_campaign_key in SKIP_DYNAMIC_SCORING_COMPANIES:
+            print(f"⏭️ Пропуск повторного скоринга: кампания ID={utm_campaign_key} в списке SKIP_DYNAMIC_SCORING_COMPANIES")
+            return "skip"
+    # === КОНЕЦ ИЗМЕНЕНИЙ ===
+
+    process_dynamic_events(lead)
+    return "ok"
+
+
+def process_lead(lead: dict) -> str:
+    return process_initial_lead(lead)
