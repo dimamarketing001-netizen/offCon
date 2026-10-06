@@ -9,11 +9,12 @@ def send_conversion(
         token: str,
         client_id: str = None,
         phone: str = None,
+        yclid: str = None,
         goal_name: str = None,
         revenue: int = None
 ) -> bool:
 
-    if not client_id and not phone:
+    if not client_id and not phone and not yclid:
         print("   ❌ Нет идентификаторов для Метрики")
         return False
 
@@ -31,6 +32,19 @@ def send_conversion(
                 f"ClientId,Target,DateTime\n"
                 f"{client_id},{goal},{timestamp}"
             )
+
+    elif yclid:
+        if revenue is not None:
+            csv_content = (
+                f"Yclid,Target,DateTime,Price,Currency\n"
+                f"{yclid},{goal},{timestamp},{revenue},RUB"
+            )
+        else:
+            csv_content = (
+                f"Yclid,Target,DateTime\n"
+                f"{yclid},{goal},{timestamp}"
+            )
+
     else:
         phone_clean = ''.join(filter(str.isdigit, str(phone)))
         if phone_clean.startswith('8') and len(phone_clean) == 11:
@@ -47,7 +61,10 @@ def send_conversion(
                 f"+{phone_clean},{goal},{timestamp}"
             )
 
-    print(f"   📤 Отправка в Метрику | counter={counter_id} | goal={goal} | revenue={revenue}")
+    print(
+        f"   📤 Отправка в Метрику | counter={counter_id} | goal={goal} | "
+        f"revenue={revenue} | client_id={client_id or '-'} | yclid={yclid or '-'}"
+    )
 
     url = (
         f"https://api-metrika.yandex.net/management/v1/"
