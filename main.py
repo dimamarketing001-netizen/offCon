@@ -1,55 +1,61 @@
-"""
-Точка входа — запуск каждые 5 минут
-"""
+"""Hourly lead scoring entry point."""
 
-import time
 from datetime import datetime
-from b24_client import get_unprocessed_leads
-from lead_processor import process_lead
-from typing import Optional, List, Dict
+import time
 
-def run():
-    print(f"\n{'#'*55}")
+from b24_client import get_recent_leads
+from lead_processor import process_lead, process_dynamic_lead
+
+
+def run() -> None:
+    print("\n" + "#" * 60)
     print(f"🚀 Запуск: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'#'*55}")
+    print("#" * 60)
 
-    leads = get_unprocessed_leads()
-
+    leads = get_recent_leads(days=21)
     if not leads:
         print("📭 Нет лидов для обработки")
         return
 
-    print(f"📋 Лидов для обработки: {len(leads)}")
+    print(f"📋 Лидов для проверки: {len(leads)}")
 
     stats = {
-        'sent': 0,
-        'no_utm': 0,  # нет UTM_CAMPAIGN
-        'no_ymuid': 0,  # нет _ym_uid
-        'not_qualified': 0,
-        'no_calls': 0,
-        'metrika_error': 0,
-        'error': 0
+        "initial_sent": 0,
+        "initial_other": 0,
+        "dynamic_ok": 0,
+        "dynamic_skip": 0,
+        "error": 0,
     }
 
-    for i, lead in enumerate(leads, 1):
-        print(f"\n[{i}/{len(leads)}]")
+    for index, lead in enumerate(leads, 1):
+        lead_id = lead.get("ID")
+        print(f"\n[{index}/{len(leads)}] lead={lead_id}")
 
         try:
-            status = process_lead(lead)
-            stats[status] = stats.get(status, 0) + 1
-        except Exception as e:
-            print(f"❌ Критическая ошибка лида {lead.get('ID')}: {e}")
-            stats['error'] += 1
+            initial_status = process_lead(lead)
+            if initial_status == "sent":
+                stats["initial_sent"] += 1
+            else:
+                stats["initial_other"] += 1
 
-        time.sleep(1)
+            dynamic_status = process_dynamic_lead(lead)
+            if dynamic_status == "ok":
+                stats["dynamic_ok"] += 1
+            else:
+                stats["dynamic_skip"] += 1
 
-    print(f"\n{'='*55}")
-    print(f"📊 ИТОГИ:")
-    for k, v in stats.items():
-        emoji = '✅' if k == 'sent' else '📊'
-        print(f"  {emoji} {k}: {v}")
-    print(f"{'='*55}")
+        except Exception as exc:
+            print(f"❌ Критическая ошибка лида {lead_id}: {exc}")
+            stats["error"] += 1
+
+        time.sleep(0.25)
+
+    print("\n" + "=" * 60)
+    print("📊 ИТОГИ")
+    for name, value in stats.items():
+        print(f"  {name}: {value}")
+    print("=" * 60)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run()
