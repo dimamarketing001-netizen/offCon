@@ -1,132 +1,109 @@
-from typing import Optional, List, Dict
-import requests
-import time
-import urllib3
 from datetime import datetime, timedelta
+import time
+from typing import Optional
+
+import requests
+
 from config import B24_WEBHOOK
 
-urllib3.disable_warnings()
+
+def _method_url(method: str) -> str:
+    return f"{B24_WEBHOOK.rstrip('/')}/{method}.json"
 
 
-def b24_request(method: str, params: dict = None) -> dict:
-    url = f"{B24_WEBHOOK}{method}.json"
+def b24_request(method: str, params: Optional[dict] = None) -> dict:
+    url = _method_url(method)
 
-    for attempt in range(3):
+    for attempt in range(1, 4):
         try:
-            r = requests.post(
-                url,
-                json=params or {},
-                timeout=90,
-                verify=False
-            )
-            data = r.json()
+            response = requests.post(url, json=params or {}, timeout=60)
 
-            if data.get('error') == 'QUERY_LIMIT_EXCEEDED':
-                print("⚠️ Лимит Б24, ждём 2с...")
-                time.sleep(2)
+            if response.status_code >= 400:
+                print(
+                    f"❌ Bitrix24 HTTP {response.status_code} | {method} | "
+                    f"{response.text[:500]}"
+                )
+                if response.status_code in (429, 502, 503, 504):
+                    time.sleep(attempt * 2)
+                    continue
+
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("error") == "QUERY_LIMIT_EXCEEDED":
+                print(f"⚠️ Лимит Б24 | {method} | попытка {attempt}/3")
+                time.sleep(attempt * 2)
                 continue
+
+            if data.get("error"):
+                print(
+                    f"❌ Bitrix24 API | {method} | "
+                    f"{data.get('error')}: {data.get('error_description', '')}"
+                )
 
             return data
 
         except requests.exceptions.Timeout:
-            print(f"⏱️ Таймаут {method}, попытка {attempt+1}/3")
-            time.sleep(3)
-        except Exception as e:
-            print(f"❌ Ошибка Б24 {method}: {e}")
-            time.sleep(2)
+            print(f"⏱️ Таймаут {method} | попытка {attempt}/3")
+            time.sleep(attempt * 2)
+        except requests.RequestException as exc:
+            print(f"❌ Сетевая ошибка Б24 {method}: {exc}")
+            time.sleep(attempt * 2)
+        except ValueError as exc:
+            print(f"❌ Некорректный JSON от Б24 {method}: {exc}")
+            return {}
 
     return {}
 
 
-def get_unprocessed_leads() -> list:
-    date_from = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
+LEAD_SELECT = ["*", "UF_*"]
 
+
+def get_recent_leads(days: int = 21) -> list:
+    date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     leads = []
     start = 0
 
     while True:
-        data = b24_request("crm.lead.list", {
-            "filter": {
-                ">=DATE_CREATE": date_from,
-                # Исключаем лиды где METRIKA_SENT = 1 (уже отправлены)
-                "=UF_CRM_1781719858208": False
+        data = b24_request(
+            "crm.lead.list",
+            {
+                "filter": {">=DATE_CREATE": date_from},
+                "select": LEAD_SELECT,
+                "order": {"DATE_CREATE": "DESC"},
+                "start": start,
             },
-            "select": [
-                "ID",
-                "TITLE",
-                "STATUS_ID",
-                "SOURCE_ID",
-                "UF_CRM_1784810882912",
-                "UF_CRM_1784809635845",
-                "UF_CRM_COOKIES",
-                "COMMENTS",
-                "PHONE",
-                "EMAIL",
-                "DATE_CREATE",
-                "UTM_SOURCE",
-                "UTM_MEDIUM",
-                "UTM_CAMPAIGN",
-                "UTM_CONTENT",
-                "UTM_TERM",
-                "UF_CRM_1781719858208",
-                "UF_CRM_1781720075678",
-                "UF_CRM_1781864619456",
-            ],
-            "order": {"DATE_CREATE": "DESC"},
-            "start": start
-        })
+        )
 
-        result = data.get('result', [])
+        result = data.get("result", [])
         if not result:
             break
 
         leads.extend(result)
         print(f"   Загружено лидов: {len(leads)}")
 
-        if len(result) < 50:
+        next_start = data.get("next")
+        if next_start is None:
             break
 
-        start += 50
-        time.sleep(0.5)
+        start = int(next_start)
+        time.sleep(0.25)
 
     return leads
 
 
-def get_calls_for_lead(lead_id: str) -> list:
-    data = b24_request("voximplant.statistic.get", {
-        "FILTER": {
-            "CRM_ENTITY_TYPE": "LEAD",
-            "CRM_ENTITY_ID": lead_id
-        },
-        "SELECT": [
-            "ID",
-            "CALL_DURATION",
-            "CALL_RECORD_URL",
-            "CALL_START_DATE",
-            "CALL_FAILED_CODE",
-            "PHONE_NUMBER"
-        ],
-        "ORDER": {"CALL_DURATION": "DESC"}
-    })
-
-    all_calls = data.get('result', [])
-
-    good_calls = [
-        c for c in all_calls
-        if int(c.get('CALL_DURATION', 0) or 0) >= 40
-        and c.get('CALL_RECORD_URL')
-        and c.get('CALL_FAILED_CODE') == '200'
-    ]
-
-    print(f"   Всего звонков: {len(all_calls)} | "
-          f"Подходящих (>=40с + запись): {len(good_calls)}")
-
-    return good_calls
+def get_lead(lead_id: str) -> Optional[dict]:
+    data = b24_request("crm.lead.get", {"id": lead_id})
+    result = data.get("result")
+    return result if isinstance(result, dict) else None
 
 
 def update_lead(lead_id: str, fields: dict) -> bool:
-    data = b24_request("crm.lead.update", {
-        "id": lead_id,
-        "fields": fields
-    })
-    return bool(data.get('result'))
+    data = b24_request(
+        "crm.lead.update",
+        {
+            "id": lead_id,
+            "fields": fields,
+        },
+    )
+    return bool(data.get("result"))
