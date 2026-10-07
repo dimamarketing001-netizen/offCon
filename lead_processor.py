@@ -4,6 +4,62 @@ from urllib.parse import urlparse, parse_qs
 
 from b24_client import update_lead, b24_request, get_lead
 from metrika_client import send_conversion
+
+# ===== СТАТИСТИКА ТЕКУЩЕГО ЗАПУСКА =====
+_RUN_STATS = {}
+_RUN_METRIKA_LEADS = set()
+
+
+def reset_run_stats():
+    global _RUN_STATS, _RUN_METRIKA_LEADS
+    _RUN_STATS = {
+        "initial_scored": 0,
+        "initial_stop": 0,
+        "initial_already_scored": 0,
+        "initial_no_answers": 0,
+        "initial_no_utm": 0,
+        "legacy_sent": 0,
+        "legacy_failed": 0,
+        "legacy_no_id": 0,
+        "dynamic_region": 0,
+        "dynamic_meeting": 0,
+        "dynamic_visit": 0,
+        "dynamic_contract": 0,
+        "dynamic_payment": 0,
+        "dynamic_no_change": 0,
+        "dynamic_skip_not_scored": 0,
+        "dynamic_skip_stop": 0,
+        "dynamic_skip_campaign": 0,
+        "metrika_success": 0,
+        "metrika_failed": 0,
+        "metrika_no_id": 0,
+        "metrika_no_config": 0,
+    }
+    _RUN_METRIKA_LEADS = set()
+
+
+def get_run_stats() -> dict:
+    result = dict(_RUN_STATS)
+    result["metrika_unique_leads"] = len(_RUN_METRIKA_LEADS)
+    return result
+
+
+def _inc_stat(name: str, value: int = 1):
+    _RUN_STATS[name] = _RUN_STATS.get(name, 0) + value
+
+
+def _send_conversion_tracked(lead_id: str, **kwargs) -> bool:
+    sent = send_conversion(**kwargs)
+    if sent:
+        _inc_stat("metrika_success")
+        _RUN_METRIKA_LEADS.add(str(lead_id))
+    else:
+        _inc_stat("metrika_failed")
+    return sent
+
+
+reset_run_stats()
+
 from config import (
     QUALIFIED_STATUSES,
     COMPANY_METRIKA_MAP,
@@ -727,7 +783,8 @@ def update_score_and_send(lead_id: str, add_value: int, reason: str) -> bool:
     print(f"📈 {reason}: +{add_value} → {new_score}")
 
     if metrika_cfg and (ym_uid or yclid or phone):
-        send_conversion(
+        _send_conversion_tracked(
+            lead_id,
             counter_id=metrika_cfg["counter_id"],
             token=metrika_cfg["token"],
             client_id=ym_uid,
@@ -737,6 +794,10 @@ def update_score_and_send(lead_id: str, add_value: int, reason: str) -> bool:
             revenue=new_score
         )
     else:
+        if not metrika_cfg:
+            _inc_stat("metrika_no_config")
+        else:
+            _inc_stat("metrika_no_id")
         print("   ⏭️ Нет данных для отправки в Метрику, обновляем только Б24")
 
     log_text = f"{reason} +{add_value} → {new_score}"
@@ -750,14 +811,17 @@ def update_score_and_send(lead_id: str, add_value: int, reason: str) -> bool:
     return True
 
 
-def process_dynamic_events(lead: dict):
+def process_dynamic_events(lead: dict) -> str:
     lead_id = lead.get("ID")
     status_id = str(lead.get("STATUS_ID") or "")
+    changed = False
 
     if not is_true(lead.get(FIELD_REGION_BOOST)):
         if check_region_boost(lead):
             if update_score_and_send(lead_id, 500, "Регион"):
                 update_lead(lead_id, {FIELD_REGION_BOOST: True})
+                _inc_stat("dynamic_region")
+                changed = True
 
     if not is_true(lead.get(FIELD_PAYMENT)):
         if has_won_deal(lead_id):
@@ -769,7 +833,8 @@ def process_dynamic_events(lead: dict):
                     FIELD_MEETING: True,
                     FIELD_REGION_BOOST: True
                 })
-            return
+                _inc_stat("dynamic_payment")
+            return "changed"
 
     if not is_true(lead.get(FIELD_CONTRACT)):
         if status_id == "CONVERTED":
@@ -779,7 +844,8 @@ def process_dynamic_events(lead: dict):
                     FIELD_VISIT: True,
                     FIELD_MEETING: True
                 })
-            return
+                _inc_stat("dynamic_contract")
+            return "changed"
 
     if not is_true(lead.get(FIELD_VISIT)):
         if status_id in ("11", "12"):
@@ -788,7 +854,8 @@ def process_dynamic_events(lead: dict):
                     FIELD_VISIT: True,
                     FIELD_MEETING: True
                 })
-            return
+                _inc_stat("dynamic_visit")
+            return "changed"
 
     if not is_true(lead.get(FIELD_MEETING)):
         if status_id == "10":
@@ -796,7 +863,14 @@ def process_dynamic_events(lead: dict):
                 update_lead(lead_id, {
                     FIELD_MEETING: True
                 })
+                _inc_stat("dynamic_meeting")
+            return "changed"
 
+    if not changed:
+        _inc_stat("dynamic_no_change")
+        return "no_change"
+
+    return "changed"
 
 def check_quiz_questions(comments: str) -> dict:
     debt = extract_field(comments, "1__Ваш_долг_более_500_000_рублей")
@@ -968,12 +1042,15 @@ def send_legacy_qualified_conversion(lead: dict, reason: str) -> str:
     phone = get_phone(fresh_lead)
 
     if not ym_uid and not yclid:
+        _inc_stat("legacy_no_id")
+        _inc_stat("metrika_no_id")
         print(f"⏭️ Нет ym_uid/yclid для old qualified conversion | lead={lead_id}")
         return "no_ymuid"
 
     current_score = int(fresh_lead.get(FIELD_SCORE) or lead.get(FIELD_SCORE) or 1)
 
-    sent = send_conversion(
+    sent = _send_conversion_tracked(
+        lead_id,
         counter_id=metrika_cfg["counter_id"],
         token=metrika_cfg["token"],
         client_id=ym_uid,
@@ -984,6 +1061,7 @@ def send_legacy_qualified_conversion(lead: dict, reason: str) -> str:
     )
 
     if sent:
+        _inc_stat("legacy_sent")
         update_lead(lead_id, {
             FIELD_METRIKA_SENT: True,
             FIELD_LOG: reason
@@ -991,6 +1069,7 @@ def send_legacy_qualified_conversion(lead: dict, reason: str) -> str:
         print(f"✅ Старая квалификация отправлена: {reason}")
         return "sent"
 
+    _inc_stat("legacy_failed")
     print(f"❌ Ошибка отправки старой квалификации: {reason}")
     return "metrika_error"
 
@@ -1011,6 +1090,9 @@ def process_initial_lead(lead: dict) -> str:
 
     result = "not_qualified"
 
+    if lead_sent_flag:
+        _inc_stat("initial_already_scored")
+
     if not lead_sent_flag:
         payload = extract_base_scoring_payload(lead)
         answers = payload.get("answers") or {}
@@ -1019,11 +1101,15 @@ def process_initial_lead(lead: dict) -> str:
         if answers:
             metrika_cfg = get_metrika_config(lead)
             if not metrika_cfg:
+                _inc_stat("initial_no_utm")
+                _inc_stat("metrika_no_config")
                 return "no_utm"
 
             if check_stop_factors(answers, lead, parsed_city):
+                _inc_stat("initial_stop")
                 if ym_uid or yclid or phone:
-                    send_conversion(
+                    _send_conversion_tracked(
+                        lead_id,
                         counter_id=metrika_cfg["counter_id"],
                         token=metrika_cfg["token"],
                         client_id=ym_uid,
@@ -1032,6 +1118,8 @@ def process_initial_lead(lead: dict) -> str:
                         goal_name="lead",
                         revenue=0
                     )
+                else:
+                    _inc_stat("metrika_no_id")
 
                 update_lead(lead_id, {
                     FIELD_LEAD_SENT: True,
@@ -1044,9 +1132,11 @@ def process_initial_lead(lead: dict) -> str:
                 return "sent"
 
             base_score = calculate_score(answers)
+            _inc_stat("initial_scored")
 
             if ym_uid or yclid or phone:
-                send_conversion(
+                _send_conversion_tracked(
+                    lead_id,
                     counter_id=metrika_cfg["counter_id"],
                     token=metrika_cfg["token"],
                     client_id=ym_uid,
@@ -1055,6 +1145,8 @@ def process_initial_lead(lead: dict) -> str:
                     goal_name="lead",
                     revenue=base_score
                 )
+            else:
+                _inc_stat("metrika_no_id")
 
             segment = get_segment(base_score)
 
@@ -1072,6 +1164,8 @@ def process_initial_lead(lead: dict) -> str:
             lead[FIELD_SCORE] = base_score
             lead[FIELD_SEGMENT] = segment
             result = "sent"
+        else:
+            _inc_stat("initial_no_answers")
 
     if metrika_sent_flag:
         return result
@@ -1108,24 +1202,26 @@ def process_dynamic_lead(lead: dict) -> str:
     print(f"📈 Динамика лида ID={lead_id} | Статус={status_id}")
 
     if not is_true(lead.get(FIELD_LEAD_SENT)):
+        _inc_stat("dynamic_skip_not_scored")
         print("⏭️ Базовый скоринг ещё не отправлялся")
-        return "skip"
+        return "skip_not_scored"
 
     if int(lead.get(FIELD_SCORE) or 0) == 0:
+        _inc_stat("dynamic_skip_stop")
         print("⛔ STOP-лид. Дальнейшая проверка отключена.")
-        return "skip"
+        return "skip_stop"
 
     # === НАЧАЛО ИЗМЕНЕНИЙ: Проверка исключения для повторного скоринга ===
     utm_campaign_raw = (lead.get("UTM_CAMPAIGN") or "").strip()
     if utm_campaign_raw:
         utm_campaign_key = extract_utm_campaign_key(utm_campaign_raw)
         if utm_campaign_key in SKIP_DYNAMIC_SCORING_COMPANIES:
+            _inc_stat("dynamic_skip_campaign")
             print(f"⏭️ Пропуск повторного скоринга: кампания ID={utm_campaign_key} в списке SKIP_DYNAMIC_SCORING_COMPANIES")
-            return "skip"
+            return "skip_campaign"
     # === КОНЕЦ ИЗМЕНЕНИЙ ===
 
-    process_dynamic_events(lead)
-    return "ok"
+    return process_dynamic_events(lead)
 
 
 def process_lead(lead: dict) -> str:
