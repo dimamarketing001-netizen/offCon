@@ -1,5 +1,6 @@
 """Hourly lead scoring entry point."""
 
+import argparse
 from datetime import datetime
 import time
 
@@ -7,12 +8,31 @@ from b24_client import get_recent_leads
 from lead_processor import process_lead, process_dynamic_lead
 
 
-def run() -> None:
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Обработка и повторный скоринг лидов Битрикс24 за заданное количество часов."
+    )
+    parser.add_argument(
+        "--hours",
+        type=int,
+        default=24,
+        help="За сколько последних часов брать лиды из Битрикс24 (по умолчанию: 24).",
+    )
+    args = parser.parse_args()
+
+    if args.hours <= 0:
+        parser.error("--hours должен быть больше 0")
+
+    return args
+
+
+def run(hours: int = 24) -> None:
     print("\n" + "#" * 60)
     print(f"🚀 Запуск: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🕒 Период: последние {hours} ч.")
     print("#" * 60)
 
-    leads = get_recent_leads(days=21)
+    leads = get_recent_leads(hours=hours)
     if not leads:
         print("📭 Нет лидов для обработки")
         return
@@ -58,4 +78,5 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    args = parse_args()
+    run(hours=args.hours)
