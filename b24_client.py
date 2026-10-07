@@ -59,8 +59,16 @@ def b24_request(method: str, params: Optional[dict] = None) -> dict:
 LEAD_SELECT = ["*", "UF_*"]
 
 
-def get_recent_leads(days: int = 21) -> list:
-    date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+def get_recent_leads(hours: int = 24) -> list:
+    if hours <= 0:
+        raise ValueError("hours должен быть больше 0")
+
+    date_from = (datetime.now().astimezone() - timedelta(hours=hours)).isoformat(
+        timespec="seconds"
+    )
+
+    print(f"   🕒 DATE_CREATE >= {date_from}")
+
     leads = []
     start = 0
 
