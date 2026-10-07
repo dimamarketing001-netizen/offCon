@@ -5,7 +5,12 @@ from datetime import datetime
 import time
 
 from b24_client import get_recent_leads
-from lead_processor import process_lead, process_dynamic_lead
+from lead_processor import (
+    process_lead,
+    process_dynamic_lead,
+    reset_run_stats,
+    get_run_stats,
+)
 
 
 def parse_args():
@@ -32,6 +37,7 @@ def run(hours: int = 24) -> None:
     print(f"🕒 Период: последние {hours} ч.")
     print("#" * 60)
 
+    reset_run_stats()
     leads = get_recent_leads(hours=hours)
     if not leads:
         print("📭 Нет лидов для обработки")
@@ -39,41 +45,59 @@ def run(hours: int = 24) -> None:
 
     print(f"📋 Лидов для проверки: {len(leads)}")
 
-    stats = {
-        "initial_sent": 0,
-        "initial_other": 0,
-        "dynamic_ok": 0,
-        "dynamic_skip": 0,
-        "error": 0,
-    }
+    errors = 0
 
     for index, lead in enumerate(leads, 1):
         lead_id = lead.get("ID")
         print(f"\n[{index}/{len(leads)}] lead={lead_id}")
 
         try:
-            initial_status = process_lead(lead)
-            if initial_status == "sent":
-                stats["initial_sent"] += 1
-            else:
-                stats["initial_other"] += 1
-
-            dynamic_status = process_dynamic_lead(lead)
-            if dynamic_status == "ok":
-                stats["dynamic_ok"] += 1
-            else:
-                stats["dynamic_skip"] += 1
+            process_lead(lead)
+            process_dynamic_lead(lead)
 
         except Exception as exc:
             print(f"❌ Критическая ошибка лида {lead_id}: {exc}")
-            stats["error"] += 1
+            errors += 1
 
         time.sleep(0.25)
 
+    stats = get_run_stats()
+
     print("\n" + "=" * 60)
-    print("📊 ИТОГИ")
-    for name, value in stats.items():
-        print(f"  {name}: {value}")
+    print("📊 ИТОГИ ЗА ЗАПУСК")
+    print(f"Всего найдено лидов: {len(leads)}")
+
+    print("\n🧮 БАЗОВЫЙ СКОРИНГ")
+    print(f"  Впервые просчитано: {stats['initial_scored']}")
+    print(f"  STOP-лидов: {stats['initial_stop']}")
+    print(f"  Уже были просчитаны ранее: {stats['initial_already_scored']}")
+    print(f"  Не распознана анкета / нет ответов: {stats['initial_no_answers']}")
+    print(f"  Нет подходящей UTM-кампании в маппинге: {stats['initial_no_utm']}")
+
+    print("\n📈 ДИНАМИЧЕСКИЙ СКОРИНГ")
+    print(f"  Регион +500: {stats['dynamic_region']}")
+    print(f"  Назначена встреча +300: {stats['dynamic_meeting']}")
+    print(f"  Визит +500: {stats['dynamic_visit']}")
+    print(f"  Договор +3000: {stats['dynamic_contract']}")
+    print(f"  Оплата +10000: {stats['dynamic_payment']}")
+    print(f"  Без новых событий: {stats['dynamic_no_change']}")
+    print(f"  Пропущено — базовый скоринг ещё не был сделан: {stats['dynamic_skip_not_scored']}")
+    print(f"  Пропущено — STOP-лид: {stats['dynamic_skip_stop']}")
+    print(f"  Пропущено — кампания в исключениях: {stats['dynamic_skip_campaign']}")
+
+    print("\n🎯 ЯНДЕКС МЕТРИКА")
+    print(f"  Уникальных лидов успешно отправлено: {stats['metrika_unique_leads']}")
+    print(f"  Успешных отправок конверсий: {stats['metrika_success']}")
+    print(f"  Ошибок отправки в Метрику: {stats['metrika_failed']}")
+    print(f"  Не отправлено — нет идентификатора Метрики/телефона: {stats['metrika_no_id']}")
+    print(f"  Не отправлено — нет счётчика для UTM-кампании: {stats['metrika_no_config']}")
+
+    print("\n🧩 СТАРАЯ ЛОГИКА КВАЛИФИКАЦИИ")
+    print(f"  Успешно отправлено: {stats['legacy_sent']}")
+    print(f"  Ошибка отправки: {stats['legacy_failed']}")
+    print(f"  Нет ym_uid/yclid: {stats['legacy_no_id']}")
+
+    print(f"\n❌ Ошибок обработки Python: {errors}")
     print("=" * 60)
 
 
